@@ -15,35 +15,47 @@ The `doublespeak/` directory currently contains a Visual Studio CMake scaffold (
 | `meteor_stego/` | The Meteor stego C library (main implementation) |
 | `doublespeak/` | Original VS-generated C++ scaffold (hello-world placeholder, not the library) |
 
+## Windows toolchain paths
+
+The VS 2022 Community tools are NOT on PATH by default. Every build session must start with `vcvarsall.bat x64`. Exact paths on this machine:
+
+| Tool | Path |
+|---|---|
+| `vcvarsall.bat` | `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat` |
+| `cmake.exe` | `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe` |
+| `ninja.exe` | `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe` |
+| `curl.exe` (downloads) | `C:\Program Files\Git\mingw64\bin\curl.exe` — use `--insecure` flag; system SSL certs are broken on this machine |
+
+**vcpkg is blocked on this machine** — `vcpkg install` fails with SSL connect errors when downloading its own bootstrap and packages. Do not attempt it. Dependencies are vendored instead (see below).
+
 ## Build — meteor_stego
 
-CMake presets are in `meteor_stego/CMakePresets.json`. The presets hardcode VS 2022 Community paths for Ninja and cmake. VS Code reads these automatically via the CMake Tools extension (`.vscode/settings.json` inside `meteor_stego/` points cmake to the VS 2022 binary).
+CMake presets are in `meteor_stego/CMakePresets.json`. The presets hardcode the VS 2022 Community paths above. VS Code reads them automatically via CMake Tools (`.vscode/settings.json` inside `meteor_stego/`).
 
-**Install dependencies first** (choose one):
+**Windows: no dependency installation needed** — libsodium is vendored as prebuilt MSVC static libs in `meteor_stego/deps/libsodium/`. WinHTTP (Windows-native) is used instead of libcurl. cJSON is vendored in `meteor_stego/third_party/cjson/`.
 
-- **vcpkg** (recommended on Windows):
-  ```
-  vcpkg install libsodium curl hyphen
-  ```
-  Then use the `-vcpkg` presets (`x64-debug-vcpkg`, `x64-release-vcpkg`) which read `%VCPKG_ROOT%`.
-
-- **System packages** (Linux/macOS):
-  ```
-  apt install libsodium-dev libcurl4-openssl-dev libhyphen-dev   # Debian/Ubuntu
-  brew install libsodium curl hyphen                              # macOS
-  ```
+**Linux/macOS — install system packages first:**
+```
+apt install libsodium-dev libcurl4-openssl-dev libhyphen-dev   # Debian/Ubuntu
+brew install libsodium curl hyphen                              # macOS
+```
 
 **Configure and build** (from repo root):
 
+```powershell
+# Windows — must activate MSVC environment first, then call the bundled cmake
+$vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat'
+$cmake  = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$build  = 'E:\Development\doublespeak-c\meteor_stego\out\build\x64-debug'
+
+# Configure (only needed once or after CMakeLists changes)
+cmd /c "call `"$vcvars`" x64 && `"$cmake`" --preset x64-debug -S meteor_stego"
+
+# Build
+cmd /c "call `"$vcvars`" x64 && `"$cmake`" --build `"$build`" --parallel"
+```
+
 ```bash
-# Windows — x64 Debug
-cmake --preset x64-debug -S meteor_stego
-cmake --build meteor_stego/out/build/x64-debug
-
-# Windows — x64 Release
-cmake --preset x64-release -S meteor_stego
-cmake --build meteor_stego/out/build/x64-release
-
 # Linux/macOS
 cmake --preset linux-debug -S meteor_stego
 cmake --build meteor_stego/out/build/linux-debug
@@ -51,18 +63,23 @@ cmake --build meteor_stego/out/build/linux-debug
 
 **Build llama-server** (optional; needed for roundtrip/determinism tests):
 
-```bash
-cmake --build meteor_stego/out/build/x64-debug --target copy_llama_server
+```powershell
+cmd /c "call `"$vcvars`" x64 && `"$cmake`" --build `"$build`" --target copy_llama_server"
 ```
 
 **Run all tests**:
 
-```bash
-ctest --preset x64-debug-test   # Windows
-ctest --preset linux-debug-test # Linux
+```powershell
+# Windows — ctest is co-located with cmake
+cmd /c "call `"$vcvars`" x64 && ctest --test-dir `"$build`" --output-on-failure"
 
-# Single test
-./meteor_stego/out/build/x64-debug/test_prng
+# Single test suite by name regex
+cmd /c "call `"$vcvars`" x64 && ctest --test-dir `"$build`" --output-on-failure -R prng"
+```
+
+```bash
+# Linux/macOS
+ctest --preset linux-debug-test
 ```
 
 ## Runtime: llama-server
@@ -90,7 +107,7 @@ The library is structured around 7 components (see `ARCHITECTURE.md §4` for ful
 | Bit Packing | `src/bits.c/.h` | Message ↔ bit array, MSB-first, null-terminated |
 | Meteor Core | `src/meteor_core.c/.h` | One encode/decode step: slot table + common-prefix recovery |
 | Syllabifier | `src/syllabifier.c/.h` | libhyphen wrapper + heuristic fallback |
-| LLM Client | `src/llm_client.c/.h` | libcurl HTTP + cJSON parsing; grammar-constrained GBNF |
+| LLM Client | `src/llm_client.c/.h` | WinHTTP (Windows) / libcurl (Linux/macOS) + cJSON; grammar-constrained GBNF |
 | Encode | `src/encode.c/.h` | Full encode pipeline |
 | Decode | `src/decode.c/.h` | Full decode pipeline |
 
@@ -100,14 +117,16 @@ Public API is in `include/meteor.h`. FFI bindings (Python ctypes, C# P/Invoke) l
 
 ## Dependencies
 
-| Dependency | Install |
-|---|---|
-| libsodium ≥ 1.0.18 | `apt install libsodium-dev` / vcpkg / homebrew |
-| libhyphen ≥ 2.8 | `apt install libhyphen-dev` / vcpkg / homebrew |
-| libcurl ≥ 7.68 | `apt install libcurl4-openssl-dev` / vcpkg |
-| cJSON 1.7.x | Vendored in `third_party/cjson/` |
-| llama.cpp | Fetched by CMake `ExternalProject_Add`; first build takes 5–15 min |
-| hyph_en_US.dic | Ship in `data/`; from LibreOffice dictionaries (Apache-2.0) |
+| Dependency | Windows | Linux/macOS |
+|---|---|---|
+| libsodium ≥ 1.0.18 | **Vendored** — prebuilt MSVC x64 static libs in `meteor_stego/deps/libsodium/libsodium/x64/{Debug,Release}/v143/static/libsodium.lib` | `apt install libsodium-dev` / homebrew |
+| HTTP client | **WinHTTP** (Windows-native, zero install) — enabled via `METEOR_HTTP_WINHTTP` compile def | libcurl: `apt install libcurl4-openssl-dev` |
+| cJSON 1.7.x | **Vendored** in `meteor_stego/third_party/cjson/` — avoids `/Za`+`/std:c11` FetchContent clash | Same vendored copy |
+| libhyphen ≥ 2.8 | Optional (`METEOR_USE_LIBHYPHEN=ON`); heuristic fallback is the default | `apt install libhyphen-dev` |
+| llama.cpp | `ExternalProject_Add`; first build takes 5–15 min | Same |
+| hyph_en_US.dic | `meteor_stego/data/` — from LibreOffice dictionaries (Apache-2.0) | Same |
+
+**Why WinHTTP instead of libcurl on Windows:** libcurl MSVC builds aren't available from curl.se (only MinGW), and vcpkg is blocked by SSL on this machine. WinHTTP ships with Windows and requires no installation.
 
 ## Determinism constraint
 
