@@ -21,6 +21,8 @@
 *.a
 *.la
 *.lo
+# Exception: prebuilt MSVC binaries vendored in deps/ (no package manager on this machine)
+!meteor_stego/deps/libsodium/**/*.lib
 
 # Shared objects (inc. Windows DLLs)
 *.dll
