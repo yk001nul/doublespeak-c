@@ -108,28 +108,40 @@ static void test_eow_token(void)
     meteor_free_dist(dist);
 }
 
-static void test_single_slot_full_bits(void)
+static void test_unit_slot_full_bits(void)
 {
-    /* A single-candidate distribution should give cp_len == beta */
-    const char* syls[] = {"only"};
-    float       probs[] = {1.0f};
-    int         beta = 4;
+    /*
+     * cp_len == beta only when a token occupies exactly ONE slot unit
+     * (slot_start == slot_end). That requires 2^beta equally-likely candidates
+     * so each gets exactly 1 slot. A single-candidate distribution spanning
+     * [0, 2^beta-1] has cp_len == 0, not beta.
+     */
+    int beta  = 3;
+    int total = 1 << beta; /* 8 */
+    const char* syls[] = {"a","b","c","d","e","f","g","h"};
+    float probs[8];
+    for (int i = 0; i < total; i++) probs[i] = 1.0f / (float)total;
 
-    MeteorDist* dist = meteor_build_dist(syls, probs, 1, beta);
-    CHECK(dist != NULL, "Single slot: dist built");
+    MeteorDist* dist = meteor_build_dist(syls, probs, total, beta);
+    CHECK(dist != NULL, "Unit slot: dist built");
     if (!dist) return;
 
-    /* slot covers [0, 2^beta - 1], so cp_len should equal beta */
-    CHECK(dist->slots[0].slot_start == 0, "Single slot: starts at 0");
-    CHECK(dist->slots[0].slot_end   == (1 << beta) - 1, "Single slot: ends at 2^beta - 1");
+    /* each candidate must get exactly 1 slot */
+    int all_unit = 1;
+    for (int i = 0; i < dist->count; i++)
+        if (dist->slots[i].slot_count != 1) { all_unit = 0; break; }
+    CHECK(all_unit, "Unit slot: every candidate covers exactly 1 slot");
+
+    CHECK(dist->slots[0].slot_start == dist->slots[0].slot_end,
+          "Unit slot: slot_start == slot_end for first candidate");
 
     const uint8_t key[32] = {7};
     MeteorPRNG prng;
     prng_init_raw(&prng, key);
 
-    uint8_t msg_bits[4] = {1, 0, 1, 0};
-    MeteorStepResult step = meteor_encode_step(dist, msg_bits, 0, 4, &prng, beta);
-    CHECK(step.cp_len == beta, "Single slot: cp_len == beta");
+    uint8_t msg_bits[3] = {1, 0, 1};
+    MeteorStepResult step = meteor_encode_step(dist, msg_bits, 0, 3, &prng, beta);
+    CHECK(step.cp_len == beta, "Unit slot: cp_len == beta");
 
     meteor_free_dist(dist);
     prng_wipe(&prng);
@@ -145,7 +157,7 @@ int main(void)
     test_slot_coverage();
     test_encode_decode_roundtrip_mock();
     test_eow_token();
-    test_single_slot_full_bits();
+    test_unit_slot_full_bits();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

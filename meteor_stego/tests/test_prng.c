@@ -17,7 +17,7 @@ static int failed = 0;
     do { if (cond) { printf("[PASS] %s\n", msg); passed++; } \
          else { printf("[FAIL] %s  (line %d)\n", msg, __LINE__); failed++; } } while(0)
 
-/* RFC 8439 §2.1.1 ChaCha20 known-answer test vector */
+/* RFC 8439 §2.1.1 IETF ChaCha20 known-answer test vector (96-bit nonce, 32-bit counter) */
 static void test_chacha20_vector(void)
 {
     uint8_t key[32] = {
@@ -26,13 +26,16 @@ static void test_chacha20_vector(void)
         0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
         0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
     };
-    uint8_t nonce[8] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4a};
+    /* 96-bit IETF nonce as specified in RFC 8439 §2.1.1 */
+    uint8_t nonce[12] = {
+        0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x4a, 0x00,0x00,0x00,0x00
+    };
     uint8_t zeros[64] = {0};
     uint8_t stream[64];
 
-    crypto_stream_chacha20_xor_ic(stream, zeros, 64, nonce, 1, key);
+    /* IETF ChaCha20: 96-bit nonce + 32-bit counter — matches RFC 8439 */
+    crypto_stream_chacha20_ietf_xor_ic(stream, zeros, 64, nonce, 1, key);
 
-    /* RFC 8439 §2.1.1 expected first 4 bytes with counter=1, nonce=...4a */
     CHECK(stream[0] == 0x22, "ChaCha20 vector byte[0]");
     CHECK(stream[1] == 0x4f, "ChaCha20 vector byte[1]");
     CHECK(stream[2] == 0x51, "ChaCha20 vector byte[2]");

@@ -59,7 +59,8 @@ uint32_t prng_next_bits(MeteorPRNG* prng, int n)
     for (int i = 0; i < n; i++) {
         if (prng->block_pos >= PRNG_BLOCK_BYTES) {
             static const uint8_t zeros[PRNG_BLOCK_BYTES] = {0};
-            crypto_stream_chacha20_xor_ic(
+            /* IETF ChaCha20 (RFC 8439): 96-bit nonce, 32-bit counter */
+            crypto_stream_chacha20_ietf_xor_ic(
                 prng->block, zeros, PRNG_BLOCK_BYTES,
                 prng->nonce, prng->block_counter++, prng->key);
             prng->block_pos = 0;

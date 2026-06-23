@@ -5,10 +5,14 @@
 
 #define PRNG_BLOCK_BYTES 64
 
+/*
+ * Uses IETF ChaCha20 (RFC 8439): 96-bit (12-byte) nonce + 32-bit counter.
+ * crypto_stream_chacha20_ietf_xor_ic provides this variant.
+ */
 typedef struct {
     uint8_t  key[32];
-    uint8_t  nonce[8];
-    uint64_t block_counter;
+    uint8_t  nonce[12];   /* 96-bit IETF nonce */
+    uint32_t block_counter;
     uint8_t  block[PRNG_BLOCK_BYTES];
     int      block_pos;
     int      bit_pos;

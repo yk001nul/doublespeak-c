@@ -23,37 +23,103 @@ set(METEOR_MODEL_PATH ""
 
 option(METEOR_USE_LIBHYPHEN "Link against libhyphen for accurate syllabification" OFF)
 
-# ── FetchContent: cJSON ───────────────────────────────────────────────────────
+# ── Vendored cJSON ────────────────────────────────────────────────────────────
+# cJSON.c / cJSON.h are vendored in third_party/cjson/ (MIT licence, v1.7.18).
+# We build it ourselves so we control compiler flags and avoid /Za incompatibility.
 
-include(FetchContent)
-
-FetchContent_Declare(cjson
-    GIT_REPOSITORY https://github.com/DaveGamble/cJSON.git
-    GIT_TAG        v1.7.18
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(cjson)
-
-# ── System dependencies ───────────────────────────────────────────────────────
-
-find_package(CURL REQUIRED)
-
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(SODIUM libsodium)
+add_library(cjson STATIC third_party/cjson/cJSON.c)
+target_include_directories(cjson PUBLIC third_party/cjson)
+# Silence MSVC warnings from cJSON source
+if(MSVC)
+    target_compile_options(cjson PRIVATE /W0)
 endif()
-if(NOT SODIUM_FOUND)
-    find_library(SODIUM_LIBRARIES NAMES sodium libsodium REQUIRED)
-    find_path(SODIUM_INCLUDE_DIRS sodium.h PATH_SUFFIXES sodium)
-    if(NOT SODIUM_INCLUDE_DIRS)
-        message(FATAL_ERROR "libsodium headers not found. Install libsodium-dev or set SODIUM_INCLUDE_DIRS.")
+set(cjson_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/cjson")
+
+# ── libsodium ─────────────────────────────────────────────────────────────────
+
+if(WIN32)
+    # Use the prebuilt MSVC binaries shipped in deps/libsodium/
+    # Layout: deps/libsodium/libsodium/x64/<Config>/v143/static/libsodium.lib
+    set(SODIUM_PREBUILT_ROOT "${CMAKE_SOURCE_DIR}/deps/libsodium/libsodium")
+
+    set(SODIUM_INCLUDE_DIRS "${SODIUM_PREBUILT_ROOT}/include")
+
+    # Generator expression selects Debug or Release lib automatically
+    set(SODIUM_DEBUG_LIB
+        "${SODIUM_PREBUILT_ROOT}/x64/Debug/v143/static/libsodium.lib")
+    set(SODIUM_RELEASE_LIB
+        "${SODIUM_PREBUILT_ROOT}/x64/Release/v143/static/libsodium.lib")
+
+    if(NOT EXISTS "${SODIUM_DEBUG_LIB}" AND NOT EXISTS "${SODIUM_RELEASE_LIB}")
+        message(FATAL_ERROR
+            "Prebuilt libsodium not found at ${SODIUM_PREBUILT_ROOT}.\n"
+            "Extract deps/libsodium-msvc.zip into deps/libsodium/ first.")
     endif()
+
+    # Use an IMPORTED target so generator expressions work per-config
+    add_library(sodium_prebuilt STATIC IMPORTED)
+    set_target_properties(sodium_prebuilt PROPERTIES
+        IMPORTED_LOCATION_DEBUG   "${SODIUM_DEBUG_LIB}"
+        IMPORTED_LOCATION_RELEASE "${SODIUM_RELEASE_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SODIUM_INCLUDE_DIRS}"
+    )
+    # Fall back: if only one config is built, use whichever exists
+    if(NOT EXISTS "${SODIUM_DEBUG_LIB}")
+        set_target_properties(sodium_prebuilt PROPERTIES IMPORTED_LOCATION "${SODIUM_RELEASE_LIB}")
+    elseif(NOT EXISTS "${SODIUM_RELEASE_LIB}")
+        set_target_properties(sodium_prebuilt PROPERTIES IMPORTED_LOCATION "${SODIUM_DEBUG_LIB}")
+    else()
+        set_target_properties(sodium_prebuilt PROPERTIES IMPORTED_LOCATION "${SODIUM_DEBUG_LIB}")
+    endif()
+
+    set(SODIUM_TARGET sodium_prebuilt)
+    # Static libsodium on Windows needs bcrypt for RNG
+    set(SODIUM_EXTRA_LIBS bcrypt)
+    set(SODIUM_COMPILE_DEFS SODIUM_STATIC)
+
+else()
+    # Linux / macOS: use pkg-config or find_library
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SODIUM libsodium)
+    endif()
+    if(NOT SODIUM_FOUND)
+        find_library(SODIUM_LIB NAMES sodium libsodium REQUIRED)
+        find_path(SODIUM_INC sodium.h PATH_SUFFIXES sodium)
+        if(NOT SODIUM_INC)
+            message(FATAL_ERROR "libsodium headers not found.")
+        endif()
+        set(SODIUM_LIBRARIES ${SODIUM_LIB})
+        set(SODIUM_INCLUDE_DIRS ${SODIUM_INC})
+    endif()
+    add_library(sodium_prebuilt INTERFACE IMPORTED)
+    target_link_libraries(sodium_prebuilt INTERFACE ${SODIUM_LIBRARIES})
+    target_include_directories(sodium_prebuilt INTERFACE ${SODIUM_INCLUDE_DIRS})
+    set(SODIUM_TARGET sodium_prebuilt)
+    set(SODIUM_EXTRA_LIBS "")
+    set(SODIUM_COMPILE_DEFS "")
 endif()
+
+# ── HTTP library ──────────────────────────────────────────────────────────────
+
+if(WIN32)
+    # Use Windows-native WinHTTP — no external dependency needed
+    set(HTTP_COMPILE_DEF METEOR_HTTP_WINHTTP)
+    set(HTTP_LINK_LIBS   winhttp ws2_32)
+    message(STATUS "HTTP backend: WinHTTP (Windows native)")
+else()
+    find_package(CURL REQUIRED)
+    set(HTTP_COMPILE_DEF "")
+    set(HTTP_LINK_LIBS   CURL::libcurl)
+    message(STATUS "HTTP backend: libcurl")
+endif()
+
+# ── libhyphen (optional) ──────────────────────────────────────────────────────
 
 if(METEOR_USE_LIBHYPHEN)
     find_library(HYPHEN_LIB NAMES hyphen REQUIRED)
     if(NOT HYPHEN_LIB)
-        message(FATAL_ERROR "libhyphen not found. Install libhyphen-dev or disable METEOR_USE_LIBHYPHEN.")
+        message(FATAL_ERROR "libhyphen not found. Disable METEOR_USE_LIBHYPHEN to use the heuristic.")
     endif()
 endif()
 
@@ -72,19 +138,20 @@ add_library(meteor SHARED
 
 target_include_directories(meteor
     PUBLIC  include
-    PRIVATE ${SODIUM_INCLUDE_DIRS}
-            ${cjson_SOURCE_DIR}
+    PRIVATE ${cjson_SOURCE_DIR}
+)
+
+target_compile_definitions(meteor PRIVATE
+    ${HTTP_COMPILE_DEF}
+    ${SODIUM_COMPILE_DEFS}
 )
 
 target_link_libraries(meteor PRIVATE
-    CURL::libcurl
+    ${SODIUM_TARGET}
+    ${SODIUM_EXTRA_LIBS}
+    ${HTTP_LINK_LIBS}
     cjson
-    ${SODIUM_LIBRARIES}
 )
-
-if(SODIUM_CFLAGS_OTHER)
-    target_compile_options(meteor PRIVATE ${SODIUM_CFLAGS_OTHER})
-endif()
 
 if(METEOR_USE_LIBHYPHEN)
     target_compile_definitions(meteor PRIVATE METEOR_USE_LIBHYPHEN)
@@ -92,19 +159,13 @@ if(METEOR_USE_LIBHYPHEN)
 endif()
 
 if(WIN32)
-    target_compile_definitions(meteor PRIVATE METEOR_BUILDING_DLL)
     set_target_properties(meteor PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 else()
     set_target_properties(meteor PROPERTIES C_VISIBILITY_PRESET hidden)
-    target_compile_definitions(meteor PRIVATE METEOR_BUILDING_DLL)
-endif()
-
-# link math for roundf in meteor_core
-if(UNIX)
     target_link_libraries(meteor PRIVATE m)
 endif()
 
-# ── llama.cpp server (external project) ───────────────────────────────────────
+# ── llama.cpp server (external project, opt-in) ───────────────────────────────
 
 include(ExternalProject)
 
@@ -123,7 +184,7 @@ ExternalProject_Add(llama_server_build
         -DLLAMA_CLBLAST=OFF
         -DLLAMA_HIPBLAS=OFF
     INSTALL_COMMAND  ""
-    EXCLUDE_FROM_ALL TRUE   # do not build automatically; use: cmake --build . --target llama_server_build
+    EXCLUDE_FROM_ALL TRUE
 )
 
 ExternalProject_Get_Property(llama_server_build BINARY_DIR)
@@ -164,7 +225,7 @@ endif()
 # ── Helper targets ────────────────────────────────────────────────────────────
 
 add_custom_target(server_health
-    COMMAND ${CMAKE_COMMAND} -E echo "Checking llama-server health on port ${METEOR_LLM_PORT}..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Checking llama-server on port ${METEOR_LLM_PORT}..."
     COMMAND curl --silent --fail --max-time 3
             "http://127.0.0.1:${METEOR_LLM_PORT}/health"
     COMMENT "Health check"
@@ -175,25 +236,19 @@ add_custom_target(server_health
 
 enable_testing()
 
-foreach(test prng bits meteor_core syllabifier)
+set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism)
+
+foreach(test ${ALL_TESTS})
     add_executable(test_${test} tests/test_${test}.c)
-    target_include_directories(test_${test} PRIVATE ${SODIUM_INCLUDE_DIRS})
-    target_link_libraries(test_${test} PRIVATE meteor ${SODIUM_LIBRARIES})
-    if(UNIX)
-        target_link_libraries(test_${test} PRIVATE m)
-    endif()
+    target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS})
+    target_link_libraries(test_${test} PRIVATE
+        meteor
+        ${SODIUM_TARGET}
+        ${SODIUM_EXTRA_LIBS}
+    )
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
 
-foreach(test roundtrip determinism)
-    add_executable(test_${test} tests/test_${test}.c)
-    target_include_directories(test_${test} PRIVATE ${SODIUM_INCLUDE_DIRS})
-    target_link_libraries(test_${test} PRIVATE meteor ${SODIUM_LIBRARIES})
-    if(UNIX)
-        target_link_libraries(test_${test} PRIVATE m)
-    endif()
-    add_test(NAME ${test} COMMAND test_${test})
-    set_tests_properties(${test} PROPERTIES
-        SKIP_REGULAR_EXPRESSION "llama-server not reachable"
-    )
-endforeach()
+set_tests_properties(roundtrip determinism PROPERTIES
+    SKIP_REGULAR_EXPRESSION "llama-server not reachable"
+)

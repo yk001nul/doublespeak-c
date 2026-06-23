@@ -6,8 +6,6 @@
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
-static int imax(int a, int b) { return a > b ? a : b; }
-
 static int common_prefix_len(int slot_start, int slot_end, int beta)
 {
     if (slot_start == slot_end) return beta;
@@ -43,24 +41,60 @@ MeteorDist* meteor_build_dist(const char** syllables, const float* probs,
     for (int i = 0; i < count; i++) sum += probs[i];
     if (sum <= 0.0f) sum = 1.0f;
 
-    int cursor = 0;
-    for (int i = 0; i < count; i++) {
-        float p = probs[i] / sum;
-        int   n = (int)roundf(p * (float)dist->total_slots);
-        n = imax(1, n);
-
-        strncpy(dist->slots[i].text, syllables[i], sizeof(dist->slots[i].text) - 1);
-        dist->slots[i].text[sizeof(dist->slots[i].text) - 1] = '\0';
-        dist->slots[i].p          = p;
-        dist->slots[i].slot_start = cursor;
-        dist->slots[i].slot_end   = cursor + n - 1;
-        dist->slots[i].slot_count = n;
-        cursor += n;
+    /*
+     * Largest-remainder method: floor each ideal count (min 1), then
+     * distribute remaining slots to candidates with the largest fractional
+     * parts. Guarantees total == total_slots and every count >= 1, even
+     * when roundf() would overshoot.
+     */
+    int*   counts = (int*)  calloc((size_t)count, sizeof(int));
+    float* fracs  = (float*)calloc((size_t)count, sizeof(float));
+    if (!counts || !fracs) {
+        free(counts); free(fracs);
+        free(dist->slots); free(dist);
+        return NULL;
     }
 
-    /* clamp last slot to absorb rounding errors */
+    int total = 0;
+    for (int i = 0; i < count; i++) {
+        float p     = probs[i] / sum;
+        float ideal = p * (float)dist->total_slots;
+        counts[i]   = (int)floorf(ideal);
+        if (counts[i] < 1) {
+            fracs[i]  = ideal - 1.0f; /* negative: already forced up, penalise in LR */
+            counts[i] = 1;
+        } else {
+            fracs[i] = ideal - (float)counts[i];
+        }
+        total += counts[i];
+    }
+
+    while (total < dist->total_slots) {
+        int best = 0;
+        for (int i = 1; i < count; i++)
+            if (fracs[i] > fracs[best]) best = i;
+        counts[best]++;
+        fracs[best] -= 1.0f;
+        total++;
+    }
+    free(fracs);
+
+    int cursor = 0;
+    for (int i = 0; i < count; i++) {
+        strncpy(dist->slots[i].text, syllables[i], sizeof(dist->slots[i].text) - 1);
+        dist->slots[i].text[sizeof(dist->slots[i].text) - 1] = '\0';
+        dist->slots[i].p          = probs[i] / sum;
+        dist->slots[i].slot_start = cursor;
+        dist->slots[i].slot_end   = cursor + counts[i] - 1;
+        dist->slots[i].slot_count = counts[i];
+        cursor += counts[i];
+    }
+    free(counts);
+
+    /* safety clamp: should be a no-op after correct LR allocation */
     dist->slots[count - 1].slot_end   = dist->total_slots - 1;
-    dist->slots[count - 1].slot_count = dist->total_slots - dist->slots[count - 1].slot_start;
+    dist->slots[count - 1].slot_count =
+        dist->total_slots - dist->slots[count - 1].slot_start;
 
     return dist;
 }
