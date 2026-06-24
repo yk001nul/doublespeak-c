@@ -1,0 +1,10 @@
+{
+    "name": "meteor-stego",
+    "version": "0.1.0",
+    "description": "Syllable-level Meteor steganographic library",
+    "dependencies": [
+        "libsodium",
+        "curl",
+        "hyphen"
+    ]
+}

@@ -1,0 +1,221 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 18,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "windows-msvc-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "installDir": "${sourceDir}/out/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl.exe",
+                "CMAKE_MAKE_PROGRAM": "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "x64-debug",
+            "displayName": "x64 Debug (MSVC)",
+            "inherits": "windows-msvc-base",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "x64-release",
+            "displayName": "x64 Release (MSVC)",
+            "inherits": "windows-msvc-base",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "x64-debug-vcpkg",
+            "displayName": "x64 Debug + vcpkg (MSVC)",
+            "inherits": "x64-debug",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        },
+        {
+            "name": "x64-release-vcpkg",
+            "displayName": "x64 Release + vcpkg (MSVC)",
+            "inherits": "x64-release",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "installDir": "${sourceDir}/out/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "installDir": "${sourceDir}/out/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "macos-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "installDir": "${sourceDir}/out/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos-debug",
+            "displayName": "macOS Debug",
+            "inherits": "macos-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "macos-release",
+            "displayName": "macOS Release",
+            "inherits": "macos-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "macos-arm64-debug",
+            "displayName": "macOS arm64 Debug",
+            "inherits": "macos-debug",
+            "cacheVariables": {
+                "CMAKE_OSX_ARCHITECTURES": "arm64"
+            }
+        },
+        {
+            "name": "macos-arm64-release",
+            "displayName": "macOS arm64 Release",
+            "inherits": "macos-release",
+            "cacheVariables": {
+                "CMAKE_OSX_ARCHITECTURES": "arm64"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "x64-debug-build",
+            "displayName": "Build x64 Debug",
+            "configurePreset": "x64-debug"
+        },
+        {
+            "name": "x64-release-build",
+            "displayName": "Build x64 Release",
+            "configurePreset": "x64-release"
+        },
+        {
+            "name": "linux-debug-build",
+            "displayName": "Build Linux Debug",
+            "configurePreset": "linux-debug"
+        },
+        {
+            "name": "linux-release-build",
+            "displayName": "Build Linux Release",
+            "configurePreset": "linux-release"
+        },
+        {
+            "name": "macos-debug-build",
+            "displayName": "Build macOS Debug",
+            "configurePreset": "macos-debug"
+        },
+        {
+            "name": "macos-release-build",
+            "displayName": "Build macOS Release",
+            "configurePreset": "macos-release"
+        },
+        {
+            "name": "macos-arm64-debug-build",
+            "displayName": "Build macOS arm64 Debug",
+            "configurePreset": "macos-arm64-debug"
+        },
+        {
+            "name": "macos-arm64-release-build",
+            "displayName": "Build macOS arm64 Release",
+            "configurePreset": "macos-arm64-release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "x64-debug-test",
+            "displayName": "Test x64 Debug",
+            "configurePreset": "x64-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-debug-test",
+            "displayName": "Test Linux Debug",
+            "configurePreset": "linux-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-debug-test",
+            "displayName": "Test macOS Debug",
+            "configurePreset": "macos-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-release-test",
+            "displayName": "Test macOS Release",
+            "configurePreset": "macos-release",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
