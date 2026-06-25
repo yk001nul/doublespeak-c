@@ -300,15 +300,22 @@ static int curl_health(LLMClient* client)
  * SHARED: prompt building, JSON parsing, public API
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Each JSON key is either one-or-more lowercase letters OR the bare EOW marker ·.
- * Splitting into an alternation prevents the model from embedding · inside a
- * syllable string (e.g. "sylle·"), which would cause map_eow to never trigger. */
-static const char* SYLLABLE_GRAMMAR =
+/* New-word grammar: keys are plain lowercase syllables only (no EOW at word start). */
+static const char* NEW_WORD_GRAMMAR =
     "root   ::= \"{\" ws pair (ws \",\" ws pair)* ws \"}\"\n"
-    "pair   ::= string ws \":\" ws number\n"
-    "string ::= \"\\\"\" ([a-z]+ | \"\xc2\xb7\") \"\\\"\"\n"
+    "pair   ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
+
+/* Continuation grammar: one-or-more syllable pairs, then the EOW pair "·" is
+ * mandatory at the end.  This guarantees the model always emits an EOW
+ * probability so words cannot grow without bound. */
+static const char* CONTINUATION_GRAMMAR =
+    "root     ::= \"{\" ws syl-pair (ws \",\" ws syl-pair)* ws \",\" ws eow-pair ws \"}\"\n"
+    "syl-pair ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
+    "eow-pair ::= \"\\\"\xc2\xb7\\\"\" ws \":\" ws number\n"
+    "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+    "ws       ::= [ \\t\\n]*\n";
 
 static char* build_new_word_prompt(const char* ctx, int n)
 {
@@ -424,7 +431,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
 
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     SYLLABLE_GRAMMAR);
+    cJSON_AddStringToObject(req, "grammar",     is_new_word ? NEW_WORD_GRAMMAR : CONTINUATION_GRAMMAR);
     cJSON_AddNumberToObject(req, "n_predict",   128);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
