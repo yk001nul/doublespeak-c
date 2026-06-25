@@ -1,0 +1,187 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Build & test (Debug, all platforms) ─────────────────────────────────────
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / GCC
+            os: ubuntu-latest
+            configure_preset: linux-debug
+            build_preset: linux-debug-build
+            test_preset: linux-debug-test
+
+          - name: Linux / Clang
+            os: ubuntu-latest
+            configure_preset: linux-debug
+            build_preset: linux-debug-build
+            test_preset: linux-debug-test
+            extra_cmake: -DCMAKE_C_COMPILER=clang
+
+          - name: Windows / MSVC x64
+            os: windows-latest
+            configure_preset: x64-debug
+            build_preset: x64-debug-build
+            test_preset: x64-debug-test
+
+          - name: macOS
+            os: macos-latest
+            configure_preset: macos-debug
+            build_preset: macos-debug-build
+            test_preset: macos-debug-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsodium-dev libcurl4-openssl-dev libhyphen-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        # brew curl is keg-only; system libcurl (always present on macOS) is used instead.
+        run: brew install ninja libsodium hyphen
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        # -DCMAKE_MAKE_PROGRAM=ninja overrides the Community-edition ninja path
+        # hard-coded in windows-msvc-base so the preset works on the Enterprise
+        # runner GitHub Actions uses.  Harmless on Linux/macOS.
+        run: >
+          cmake --preset ${{ matrix.configure_preset }} -S meteor_stego
+          -DCMAKE_MAKE_PROGRAM=ninja
+          ${{ matrix.extra_cmake || '' }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build_preset }} --parallel
+
+      - name: Test
+        # roundtrip and determinism tests emit "llama-server not reachable" and
+        # are automatically marked SKIP via SKIP_REGULAR_EXPRESSION — no server
+        # or exclusion flags needed.
+        run: ctest --preset ${{ matrix.test_preset }} --output-on-failure
+
+  # ── Release builds (tags only) ──────────────────────────────────────────────
+  build-release:
+    name: Release ${{ matrix.name }}
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            configure_preset: linux-release
+            build_preset: linux-release-build
+            artifact: meteor-linux-x64
+
+          - name: Windows
+            os: windows-latest
+            configure_preset: x64-release
+            build_preset: x64-release-build
+            artifact: meteor-windows-x64
+
+          - name: macOS
+            os: macos-latest
+            configure_preset: macos-release
+            build_preset: macos-release-build
+            artifact: meteor-macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsodium-dev libcurl4-openssl-dev libhyphen-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja libsodium hyphen
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: >
+          cmake --preset ${{ matrix.configure_preset }} -S meteor_stego
+          -DCMAKE_MAKE_PROGRAM=ninja
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build_preset }} --parallel
+
+      - name: Stage artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-staging
+          $dir = "meteor_stego\out\build\${{ matrix.configure_preset }}"
+          Copy-Item "$dir\meteor.dll"  release-staging\
+          Copy-Item "$dir\meteor.lib"  release-staging\ -ErrorAction SilentlyContinue
+          Copy-Item "meteor_stego\include\meteor.h" release-staging\
+
+      - name: Stage artifacts (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p release-staging
+          cp meteor_stego/out/build/${{ matrix.configure_preset }}/libmeteor.* release-staging/
+          cp meteor_stego/include/meteor.h release-staging/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-staging/
+          retention-days: 7
+
+  # ── GitHub Release (tags only) ──────────────────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            meteor-linux-x64/**
+            meteor-windows-x64/**
+            meteor-macos/**
+          draft: false
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
