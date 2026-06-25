@@ -66,10 +66,12 @@ jobs:
         # hard-coded in windows-msvc-base so the preset works on the Enterprise
         # runner GitHub Actions uses.  Harmless on Linux/macOS.
         run: >
-          cmake --preset ${{ matrix.configure_preset }} -S meteor_stego
+          cmake --preset ${{ matrix.configure_preset }}
+          -S meteor_stego
+          -B meteor_stego/out/build/${{ matrix.configure_preset }}
           -DCMAKE_MAKE_PROGRAM=ninja
           ${{ matrix.extra_cmake || '' }}
-
+          
       - name: Build
         run: cmake --build --preset ${{ matrix.build_preset }} --parallel
 
@@ -128,8 +130,10 @@ jobs:
 
       - name: Configure
         run: >
-          cmake --preset ${{ matrix.configure_preset }} -S meteor_stego
-          -DCMAKE_MAKE_PROGRAM=ninja
+          cmake --preset ${{ matrix.configure_preset }}
+          -S meteor_stego
+          -B meteor_stego/out/build/${{ matrix.configure_preset }}
+          -DCMAKE_MAKE_PROGRAM=ninja          
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_preset }} --parallel
