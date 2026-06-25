@@ -232,20 +232,32 @@ add_custom_target(server_health
     USES_TERMINAL
 )
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# ── Tests ────────────────────────────────────────────────────────[...]
 
 enable_testing()
 
 set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism)
 
+# Internal source files needed by tests
+set(INTERNAL_SOURCES
+    src/prng.c
+    src/bits.c
+    src/meteor_core.c
+    src/syllabifier.c
+)
+
 foreach(test ${ALL_TESTS})
-    add_executable(test_${test} tests/test_${test}.c)
+    add_executable(test_${test} tests/test_${test}.c ${INTERNAL_SOURCES})
+    target_include_directories(test_${test} PRIVATE
+        include
+        ${cjson_SOURCE_DIR}
+    )
     target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS})
     target_link_libraries(test_${test} PRIVATE
-        meteor
         ${SODIUM_TARGET}
         ${SODIUM_EXTRA_LIBS}
         cjson
+        m
     )
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
