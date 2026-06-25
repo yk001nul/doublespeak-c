@@ -245,6 +245,7 @@ foreach(test ${ALL_TESTS})
         meteor
         ${SODIUM_TARGET}
         ${SODIUM_EXTRA_LIBS}
+        cjson
     )
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
