@@ -53,7 +53,7 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
     size_t bit_offset = 0;
     int    steps      = 0;
 
-    while (bit_offset < total_bits && steps < ctx->max_steps) {
+    while ((bit_offset < total_bits || partial_word[0] != '\0') && steps < ctx->max_steps) {
         int is_new_word = (partial_word[0] == '\0');
 
         LLMResponse* resp = llm_client_get_syllable_dist(

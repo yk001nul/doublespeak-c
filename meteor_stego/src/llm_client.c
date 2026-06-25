@@ -300,13 +300,22 @@ static int curl_health(LLMClient* client)
  * SHARED: prompt building, JSON parsing, public API
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-static const char* SYLLABLE_GRAMMAR =
+/* New-word grammar: keys are plain lowercase syllables only (no EOW at word start). */
+static const char* NEW_WORD_GRAMMAR =
     "root   ::= \"{\" ws pair (ws \",\" ws pair)* ws \"}\"\n"
-    "pair   ::= string ws \":\" ws number\n"
-    "string ::= \"\\\"\" char+ \"\\\"\"\n"
-    "char   ::= [a-z\xc2\xb7]\n"
+    "pair   ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
+
+/* Continuation grammar: one-or-more syllable pairs, then the EOW pair "·" is
+ * mandatory at the end.  This guarantees the model always emits an EOW
+ * probability so words cannot grow without bound. */
+static const char* CONTINUATION_GRAMMAR =
+    "root     ::= \"{\" ws syl-pair (ws \",\" ws syl-pair)* ws \",\" ws eow-pair ws \"}\"\n"
+    "syl-pair ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
+    "eow-pair ::= \"\\\"\xc2\xb7\\\"\" ws \":\" ws number\n"
+    "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+    "ws       ::= [ \\t\\n]*\n";
 
 static char* build_new_word_prompt(const char* ctx, int n)
 {
@@ -316,7 +325,7 @@ static char* build_new_word_prompt(const char* ctx, int n)
         "Text so far: \"%s\"\n"
         "You are generating the next word one syllable at a time.\n"
         "Provide the %d most natural first syllables for the next word.\n"
-        "Return ONLY a JSON object: {\"syl\": prob, ...} — probs sum to 1.0.",
+        "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
         ctx, n);
     return buf;
 }
@@ -330,7 +339,7 @@ static char* build_continuation_prompt(const char* ctx, const char* partial, int
         "Word being built: \"%s\"\n"
         "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
         "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
-        "Return ONLY a JSON object — probs sum to 1.0.",
+        "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
         ctx, partial, n - 1, partial);
     return buf;
 }
@@ -387,6 +396,12 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     return resp;
 }
 
+static const char* FALLBACK_SYLLABLES[] = {
+    "the", "in", "a", "re", "pro", "con", "de", "ex", "un", "be",
+    "per", "dis", "over", "out", "sub", "pre", "inter", "mis", "non", "bi"
+};
+#define FALLBACK_SYLLABLES_COUNT 20
+
 static LLMResponse* uniform_fallback(int n)
 {
     LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
@@ -394,7 +409,9 @@ static LLMResponse* uniform_fallback(int n)
     resp->count       = n;
     float p = 1.0f / (float)n;
     for (int i = 0; i < n; i++) {
-        snprintf(resp->candidates[i].text, 64, "syl%d", i);
+        strncpy(resp->candidates[i].text,
+                FALLBACK_SYLLABLES[i % FALLBACK_SYLLABLES_COUNT], 63);
+        resp->candidates[i].text[63] = '\0';
         resp->candidates[i].prob = p;
     }
     return resp;
@@ -414,7 +431,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
 
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     SYLLABLE_GRAMMAR);
+    cJSON_AddStringToObject(req, "grammar",     is_new_word ? NEW_WORD_GRAMMAR : CONTINUATION_GRAMMAR);
     cJSON_AddNumberToObject(req, "n_predict",   128);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);

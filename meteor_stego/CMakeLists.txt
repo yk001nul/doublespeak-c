@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # ── User-configurable options ─────────────────────────────────────────────────
 
-set(LLAMA_CPP_GIT_TAG "b4693"
+set(LLAMA_CPP_GIT_TAG "b4694"
     CACHE STRING "llama.cpp git tag or commit hash to build llama-server from")
 
 set(LLAMA_CPP_REPO "https://github.com/ggerganov/llama.cpp.git"
@@ -178,7 +178,7 @@ ExternalProject_Add(llama_server_build
         -DCMAKE_BUILD_TYPE=Release
         -DLLAMA_BUILD_SERVER=ON
         -DLLAMA_BUILD_TESTS=OFF
-        -DLLAMA_BUILD_EXAMPLES=OFF
+        -DLLAMA_BUILD_EXAMPLES=ON
         -DLLAMA_METAL=OFF
         -DLLAMA_CUBLAS=OFF
         -DLLAMA_CLBLAST=OFF

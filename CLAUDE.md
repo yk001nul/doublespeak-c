@@ -133,14 +133,22 @@ The library is structured around 7 components (see `ARCHITECTURE.md §4` for ful
 | PRNG | `src/prng.c/.h` | ChaCha20 CSPRNG keyed via HKDF-SHA256 (libsodium) |
 | Bit Packing | `src/bits.c/.h` | Message ↔ bit array, MSB-first, null-terminated |
 | Meteor Core | `src/meteor_core.c/.h` | One encode/decode step: slot table + common-prefix recovery |
-| Syllabifier | `src/syllabifier.c/.h` | libhyphen wrapper + heuristic fallback |
-| LLM Client | `src/llm_client.c/.h` | WinHTTP (Windows) / libcurl (Linux/macOS) + cJSON; grammar-constrained GBNF |
-| Encode | `src/encode.c/.h` | Full encode pipeline |
-| Decode | `src/decode.c/.h` | Full decode pipeline |
+| Syllabifier | `src/syllabifier.c/.h` | libhyphen wrapper + heuristic fallback (not used in decode — see below) |
+| LLM Client | `src/llm_client.c/.h` | WinHTTP (Windows) / libcurl (Linux/macOS) + cJSON; two-grammar GBNF: `NEW_WORD_GRAMMAR` (syllables only) for word starts, `CONTINUATION_GRAMMAR` (syllables + mandatory `·` EOW at end) for continuations |
+| Encode | `src/encode.c/.h` | Full encode pipeline; loop runs until all message bits are encoded **and** the current word ends with EOW (not just until bits are exhausted) |
+| Decode | `src/decode.c/.h` | Full decode pipeline; uses **LLM prefix-matching** to recover the encoder's syllable sequence from each covertext word — the syllabifier is not used |
 
 Public API is in `include/meteor.h`. FFI bindings (Python ctypes, C# P/Invoke) live in `bindings/`.
 
 **Key invariant:** Encoder and decoder must produce byte-identical LLM prompts at every step. The reconstructed `full_text` string must use exactly the same space separators, word boundaries, and `starting_context` prefix on both sides. Any divergence corrupts all subsequent bit recovery with no error signal.
+
+### Encode/decode algorithm notes
+
+**Two-grammar system:** With `--temp 0.0` the model is greedy and assigns near-zero probability to the EOW token `·` when it is merely *allowed* by the grammar. `CONTINUATION_GRAMMAR` makes `·` *mandatory* as the final key in every continuation response, guaranteeing it always appears in the slot table.
+
+**Encoder loop termination:** The encode loop condition is `(bit_offset < total_bits || partial_word[0] != '\0')`. The encoder must always finish the current word with an EOW step before stopping, because the decoder synthesises an EOW step at every word boundary. Stopping mid-word (old behaviour) caused a one-step PRNG divergence per word.
+
+**Decoder prefix-matching:** The syllabifier cannot reconstruct the encoder's syllable sequence for artificially concatenated words (e.g. `"resreinin..."` — heuristic VC|CV splits differ from the encoder's actual LLM choices). Instead, the decoder iterates each covertext word character by character, querying the LLM with the same context/partial as the encoder, and picks the longest candidate that is a prefix of the remaining text. After all syllables of a word are consumed, one EOW synthesis step is run to keep the PRNG in sync — unless the null terminator was already found mid-word (in which case EOW synthesis is skipped, matching the encoder which also had no EOW for the last partial word).
 
 ## Dependencies
 
