@@ -136,6 +136,7 @@ jobs:
           -DCMAKE_MAKE_PROGRAM=ninja          
 
       - name: Build
+        working-directory: meteor_stego
         run: cmake --build --preset ${{ matrix.build_preset }} --parallel
 
       - name: Stage artifacts (Windows)
