@@ -55,6 +55,12 @@ jobs:
         # brew curl is keg-only; system libcurl (always present on macOS) is used instead.
         run: brew install ninja libsodium hyphen
 
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg integrate install
+          vcpkg install curl:x64-windows
+
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
