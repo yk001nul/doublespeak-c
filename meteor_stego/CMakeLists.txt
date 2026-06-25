@@ -250,7 +250,14 @@ set(INTERNAL_SOURCES
 )
 
 foreach(test ${ALL_TESTS})
-    add_executable(test_${test} tests/test_${test}.c ${INTERNAL_SOURCES})
+    if(test MATCHES "roundtrip|determinism")
+        # These tests use the public meteor API, don't compile internal sources
+        add_executable(test_${test} tests/test_${test}.c)
+    else()
+        # Other tests need internal sources for unit testing
+        add_executable(test_${test} tests/test_${test}.c ${INTERNAL_SOURCES})
+    endif()
+    
     target_include_directories(test_${test} PRIVATE
         include
         ${cjson_SOURCE_DIR}
