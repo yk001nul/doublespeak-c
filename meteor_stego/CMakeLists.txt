@@ -259,13 +259,14 @@ foreach(test ${ALL_TESTS})
     target_link_libraries(test_${test} PRIVATE
         ${SODIUM_TARGET}
         ${SODIUM_EXTRA_LIBS}
+        ${HTTP_LINK_LIBS}
         cjson
         m
     )
     
     # Link roundtrip and determinism tests against the meteor library
     if(test MATCHES "roundtrip|determinism")
-        target_link_libraries(test_${test} PRIVATE meteor ${HTTP_LINK_LIBS})
+        target_link_libraries(test_${test} PRIVATE meteor)
     endif()
     
     add_test(NAME ${test} COMMAND test_${test})
