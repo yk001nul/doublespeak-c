@@ -161,7 +161,8 @@ endif()
 if(WIN32)
     set_target_properties(meteor PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 else()
-    set_target_properties(meteor PROPERTIES C_VISIBILITY_PRESET hidden)
+    # Export public API symbols even with hidden visibility
+    set_target_properties(meteor PROPERTIES C_VISIBILITY_PRESET default)
     target_link_libraries(meteor PRIVATE m)
 endif()
 
@@ -273,6 +274,7 @@ foreach(test ${ALL_TESTS})
     
     # Link roundtrip and determinism tests against the meteor library
     if(test MATCHES "roundtrip|determinism")
+        add_dependencies(test_${test} meteor)
         target_link_libraries(test_${test} PRIVATE meteor)
     endif()
     
