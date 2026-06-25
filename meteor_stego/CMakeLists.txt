@@ -244,6 +244,9 @@ set(INTERNAL_SOURCES
     src/bits.c
     src/meteor_core.c
     src/syllabifier.c
+    src/llm_client.c
+    src/encode.c
+    src/decode.c
 )
 
 foreach(test ${ALL_TESTS})
