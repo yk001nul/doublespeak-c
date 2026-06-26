@@ -5,6 +5,6 @@
     "dependencies": [
         "libsodium",
         "curl",
-        "hyphen"
+        "libhyphen"
     ]
 }
