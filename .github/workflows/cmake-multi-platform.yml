@@ -73,8 +73,8 @@ jobs:
         # runner GitHub Actions uses.  Harmless on Linux/macOS.
         run: >
           cmake --preset ${{ matrix.configure_preset }}
-          -S meteor_stego
-          -B meteor_stego/out/build/${{ matrix.configure_preset }}
+          -S .
+          -B out/build/${{ matrix.configure_preset }}
           -DCMAKE_MAKE_PROGRAM=ninja
           ${{ matrix.extra_cmake || '' }}
           
@@ -86,6 +86,7 @@ jobs:
         # roundtrip and determinism tests emit "llama-server not reachable" and
         # are automatically marked SKIP via SKIP_REGULAR_EXPRESSION — no server
         # or exclusion flags needed.
+        working-directory: meteor_stego
         run: ctest --preset ${{ matrix.test_preset }} --output-on-failure
 
   # ── Release builds (tags only) ──────────────────────────────────────────────
