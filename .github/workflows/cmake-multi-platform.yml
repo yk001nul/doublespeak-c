@@ -167,6 +167,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja libsodium hyphen
 
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg.exe integrate install
+
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -174,12 +182,15 @@ jobs:
           arch: x64
 
       - name: Configure
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: >
           cmake --preset ${{ matrix.configure_preset }}
           -S meteor_stego
           -B meteor_stego/out/build/${{ matrix.configure_preset }}
           -DCMAKE_MAKE_PROGRAM=ninja
           -DMETEOR_USE_LIBHYPHEN=OFF
+          ${{ matrix.extra_cmake || '' }}
 
       - name: Build
         working-directory: meteor_stego
