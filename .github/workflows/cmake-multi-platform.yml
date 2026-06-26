@@ -79,7 +79,7 @@ jobs:
           ${{ matrix.extra_cmake || '' }}
           
       - name: Build
-        working-directory: .
+        working-directory: meteor_stego
         run: cmake --build --preset ${{ matrix.build_preset }} --parallel
 
       - name: Test
