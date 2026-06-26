@@ -34,6 +34,7 @@ jobs:
             configure_preset: x64-debug
             build_preset: x64-debug-build
             test_preset: x64-debug-test
+            extra_cmake: -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
 
           - name: macOS
             os: macos-latest
@@ -82,10 +83,18 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          vcpkg integrate install
-          vcpkg install curl:x64-windows
-
+          # Clone and bootstrap vcpkg in the workspace (ensures vcpkg is present)
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          .\vcpkg\bootstrap-vcpkg.bat
+      
+          # Install curl for x64-windows triplet
+          .\vcpkg\vcpkg.exe install curl:x64-windows
+      
+          # Optional: integrate (useful for Visual Studio)
+          .\vcpkg\vcpkg.exe integrate install
+          
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -135,6 +144,7 @@ jobs:
             configure_preset: x64-release
             build_preset: x64-release-build
             artifact: meteor-windows-x64
+            extra_cmake: -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
 
           - name: macOS
             os: macos-latest
