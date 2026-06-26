@@ -5,6 +5,6 @@
     "dependencies": [
         "libsodium",
         "curl",
-        "libhyphen"
+        { "name": "libhyphen", "platform": "!windows" }
     ]
 }
