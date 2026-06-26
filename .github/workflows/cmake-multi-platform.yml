@@ -32,7 +32,7 @@ jobs:
           - name: Windows
             os: windows-latest
             configure_preset: x64-debug-vcpkg
-            build_preset: x64-debug-build
+            build_preset: x64-debug-vcpkg-build
             extra_cmake: "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
             artifact: meteor-windows-x64
 
@@ -168,8 +168,8 @@ jobs:
 
           - name: Windows
             os: windows-latest
-            configure_preset: x64-release
-            build_preset: x64-release-build
+            configure_preset: x64-release-vcpkg
+            build_preset: x64-release-vcpkg-build
             artifact: meteor-windows-x64
             extra_cmake: "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
