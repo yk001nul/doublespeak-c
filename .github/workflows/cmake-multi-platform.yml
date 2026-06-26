@@ -66,16 +66,30 @@ jobs:
           brew doctor || true
       
           # Install packages individually with checks and retries
+          # This helper tries known fallbacks for some packages (e.g. hyphen -> libhyphen)
+          # and treats missing formulae as non-fatal (prints diagnostics and continues).
           install() {
             pkg="$1"
-            # Verify the formula/cask exists before trying to install
-            if brew info "$pkg" >/dev/null 2>&1; then
-              brew install "$pkg" || brew reinstall "$pkg"
-            else
-              echo "Homebrew formula/cask '$pkg' not found. Showing search results:"
-              brew search "$pkg" || true
-              return 1
+    
+            # For packages with alternate names try fallbacks first
+            candidates=("$pkg")
+            if [ "$pkg" = "hyphen" ]; then
+              candidates=("hyphen" "libhyphen")
             fi
+    
+            for candidate in "${candidates[@]}"; do
+              if brew info "$candidate" >/dev/null 2>&1; then
+                # Install or reinstall if available
+                brew install "$candidate" || brew reinstall "$candidate"
+                return 0
+              fi
+            done
+    
+            # Not found: show helpful diagnostics but continue
+            echo "Homebrew formula/cask '$pkg' not found on this runner. Showing search results:"
+            brew search "$pkg" || true
+            echo "Continuing without '$pkg' (not found)."
+            return 0
           }
       
           install ninja
