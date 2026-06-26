@@ -31,8 +31,8 @@ jobs:
 
           - name: Windows
             os: windows-latest
-            configure_preset: x64-release-vcpkg
-            build_preset: x64-release-build
+            configure_preset: x64-debug-vcpkg
+            build_preset: x64-debug-build
             artifact: meteor-windows-x64
 
           - name: macOS
