@@ -29,12 +29,11 @@ jobs:
             test_preset: linux-debug-test
             extra_cmake: -DCMAKE_C_COMPILER=clang
 
-          - name: Windows / MSVC x64
+          - name: Windows
             os: windows-latest
-            configure_preset: x64-debug
-            build_preset: x64-debug-build
-            test_preset: x64-debug-test
-            extra_cmake: -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
+            configure_preset: x64-release-vcpkg
+            build_preset: x64-release-build
+            artifact: meteor-windows-x64
 
           - name: macOS
             os: macos-latest
@@ -105,6 +104,8 @@ jobs:
         # -DCMAKE_MAKE_PROGRAM=ninja overrides the Community-edition ninja path
         # hard-coded in windows-msvc-base so the preset works on the Enterprise
         # runner GitHub Actions uses.  Harmless on Linux/macOS.
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: >
           cmake --preset ${{ matrix.configure_preset }}
           -S meteor_stego
