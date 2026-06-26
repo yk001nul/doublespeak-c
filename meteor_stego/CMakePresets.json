@@ -162,7 +162,7 @@
             "name": "x64-release-vcpkg-build",
             "displayName": "Build x64 Release + vcpkg",
             "configurePreset": "x64-release-vcpkg"
-        }
+        },
         {
             "name": "linux-debug-build",
             "displayName": "Build Linux Debug",
