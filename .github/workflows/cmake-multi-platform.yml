@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja sodium curl
+          brew install ninja libsodium curl
           brew install libhyphen || brew install hyphen || echo "libhyphen not available (optional)"
 
       - name: Install dependencies (Windows)
@@ -169,7 +169,7 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja sodium curl
+          brew install ninja libsodium curl
           brew install libhyphen || brew install hyphen || echo "libhyphen not available (optional)"
 
       - name: Install dependencies (Windows)
