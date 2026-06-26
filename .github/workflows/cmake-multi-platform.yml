@@ -55,46 +55,8 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          set -euxo pipefail
-      
-          # Update Homebrew metadata
           brew update
-      
-          # Basic diagnostics to capture runner state in logs
-          brew --version
-          brew config
-          brew doctor || true
-      
-          # Install packages individually with checks and retries
-          # This helper tries known fallbacks for some packages (e.g. hyphen -> libhyphen)
-          # and treats missing formulae as non-fatal (prints diagnostics and continues).
-          install() {
-            pkg="$1"
-    
-            # For packages with alternate names try fallbacks first
-            candidates=("$pkg")
-            if [ "$pkg" = "hyphen" ]; then
-              candidates=("hyphen" "libhyphen")
-            fi
-    
-            for candidate in "${candidates[@]}"; do
-              if brew info "$candidate" >/dev/null 2>&1; then
-                # Install or reinstall if available
-                brew install "$candidate" || brew reinstall "$candidate"
-                return 0
-              fi
-            done
-    
-            # Not found: show helpful diagnostics but continue
-            echo "Homebrew formula/cask '$pkg' not found on this runner. Showing search results:"
-            brew search "$pkg" || true
-            echo "Continuing without '$pkg' (not found)."
-            return 0
-          }
-      
-          install ninja
-          install libsodium
-          install hyphen
+          brew install ninja libsodium libcurl libhyphen
 
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
