@@ -118,9 +118,8 @@ endif()
 
 if(METEOR_USE_LIBHYPHEN)
     find_library(HYPHEN_LIB NAMES hyphen REQUIRED)
-    if(NOT HYPHEN_LIB)
-        message(FATAL_ERROR "libhyphen not found. Disable METEOR_USE_LIBHYPHEN to use the heuristic.")
-    endif()
+    find_path(HYPHEN_INCLUDE_DIR NAMES hyphen.h REQUIRED)
+    message(STATUS "libhyphen: ${HYPHEN_LIB}  headers: ${HYPHEN_INCLUDE_DIR}")
 endif()
 
 # ── Meteor library ────────────────────────────────────────────────────────────
@@ -155,6 +154,7 @@ target_link_libraries(meteor PRIVATE
 
 if(METEOR_USE_LIBHYPHEN)
     target_compile_definitions(meteor PRIVATE METEOR_USE_LIBHYPHEN)
+    target_include_directories(meteor PRIVATE ${HYPHEN_INCLUDE_DIR})
     target_link_libraries(meteor PRIVATE ${HYPHEN_LIB})
 endif()
 

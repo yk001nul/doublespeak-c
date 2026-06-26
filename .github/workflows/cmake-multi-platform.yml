@@ -111,6 +111,7 @@ jobs:
           -S meteor_stego
           -B meteor_stego/out/build/${{ matrix.configure_preset }}
           -DCMAKE_MAKE_PROGRAM=ninja
+          -DMETEOR_USE_LIBHYPHEN=OFF
           ${{ matrix.extra_cmake || '' }}
           
       - name: Build
@@ -177,7 +178,8 @@ jobs:
           cmake --preset ${{ matrix.configure_preset }}
           -S meteor_stego
           -B meteor_stego/out/build/${{ matrix.configure_preset }}
-          -DCMAKE_MAKE_PROGRAM=ninja                    
+          -DCMAKE_MAKE_PROGRAM=ninja
+          -DMETEOR_USE_LIBHYPHEN=OFF
 
       - name: Build
         working-directory: meteor_stego
