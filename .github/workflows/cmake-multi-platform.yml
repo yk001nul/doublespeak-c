@@ -148,6 +148,7 @@ jobs:
         # roundtrip and determinism tests emit "llama-server not reachable" and
         # are automatically marked SKIP via SKIP_REGULAR_EXPRESSION — no server
         # or exclusion flags needed.
+        if: ${{ matrix.test_preset != '' }}
         working-directory: meteor_stego
         run: ctest --preset ${{ matrix.test_preset }} --output-on-failure
 
