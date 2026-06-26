@@ -263,14 +263,16 @@ foreach(test ${ALL_TESTS})
         include
         ${cjson_SOURCE_DIR}
     )
-    target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS})
+    target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS} ${HTTP_COMPILE_DEF})
     target_link_libraries(test_${test} PRIVATE
         ${SODIUM_TARGET}
         ${SODIUM_EXTRA_LIBS}
         ${HTTP_LINK_LIBS}
         cjson
-        m
     )
+    if(NOT WIN32)
+        target_link_libraries(test_${test} PRIVATE m)
+    endif()
     
     # Link roundtrip and determinism tests against the meteor library
     if(test MATCHES "roundtrip|determinism")
