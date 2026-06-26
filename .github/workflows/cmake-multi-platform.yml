@@ -31,8 +31,9 @@ jobs:
 
           - name: Windows
             os: windows-latest
-            configure_preset: x64-debug-vcpkg
+            configure_preset: x64-debug-build
             build_preset: x64-debug-build
+            extra_cmake: -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
             artifact: meteor-windows-x64
 
           - name: macOS
