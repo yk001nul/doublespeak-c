@@ -73,15 +73,24 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "--- Install dependencies (Windows) ---"
-          # Clear any stale vcpkg registry cache
+          
+          # Clear both registry cache AND vcpkg directory
           $registryCache = "$env:LOCALAPPDATA\vcpkg\registries"
           if (Test-Path $registryCache) {
             Write-Host "Removing stale registry cache at: $registryCache"
             Remove-Item -Path $registryCache -Recurse -Force
           }
           
-          # Clone and bootstrap vcpkg
-          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          # Remove any existing vcpkg directory to ensure clean state
+          if (Test-Path $env:VCPKG_ROOT) {
+            Write-Host "Removing existing vcpkg directory"
+            Remove-Item -Path $env:VCPKG_ROOT -Recurse -Force
+          }
+          
+          # Clone vcpkg with a specific stable commit (adjust hash as needed)
+          Write-Host "Cloning vcpkg repository..."
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
           
           # Verify toolchain exists
