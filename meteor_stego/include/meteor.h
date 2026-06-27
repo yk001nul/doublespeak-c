@@ -37,6 +37,21 @@ typedef struct {
     const char* hyphen_dict;     /* path to hyph_en_US.dic (NULL = use heuristic) */
     int         max_steps;       /* max syllable steps before giving up (default 256) */
     int         llm_timeout_ms;  /* HTTP timeout per LLM call (default 30000) */
+
+    /*
+     * LLM server thread count (0 = read METEOR_NUM_THREADS env var, fallback 1).
+     *
+     * The llama-server must be started with the matching --threads value.
+     * Use the meteor_get_num_threads() / meteor_get_server_thread_flag() helpers
+     * to retrieve the resolved value for programmatic server management.
+     *
+     * Determinism warning: two machines with different thread counts will produce
+     * different floating-point reduction orders and thus different token probability
+     * distributions, corrupting decoding.  Only raise this above 1 when both the
+     * encoder and decoder are guaranteed to run on the same physical machine with
+     * an identical thread count.
+     */
+    int         num_threads;     /* llama-server --threads (0 = env/default) */
 } MeteorConfig;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
@@ -85,6 +100,20 @@ char* meteor_syllabify_word(MeteorCtx* ctx, const char* word);
 
 /* Check LLM server health. Returns 1 if reachable, 0 otherwise. */
 int meteor_llm_health(MeteorCtx* ctx);
+
+/*
+ * Returns the resolved LLM thread count for this context (always >= 1).
+ * Resolution order: MeteorConfig.num_threads → METEOR_NUM_THREADS env var → 1.
+ */
+int meteor_get_num_threads(MeteorCtx* ctx);
+
+/*
+ * Returns a heap-allocated string containing the --threads flag ready to
+ * append to a llama-server launch command, e.g. "--threads 4".
+ * Useful when launching the server programmatically.
+ * Caller must call meteor_free() on the returned pointer.
+ */
+char* meteor_get_server_thread_flag(MeteorCtx* ctx);
 
 /* Free any pointer returned by this library. */
 void meteor_free(void* ptr);
