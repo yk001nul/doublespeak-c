@@ -33,8 +33,7 @@ jobs:
             os: windows-latest
             configure_preset: x64-debug-vcpkg
             build_preset: x64-debug-vcpkg-build
-            test_preset: x64-debug-vcpkg-test            
-            extra_cmake: "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            test_preset: x64-debug-vcpkg-test                        
             artifact: meteor-windows-x64
 
           - name: macOS
@@ -93,8 +92,6 @@ jobs:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: |
           echo "--- Configure (Windows) ---"
-          echo "GITHUB_WORKSPACE = $env:GITHUB_WORKSPACE"
-          echo "VCPKG_ROOT = $env:VCPKG_ROOT"
           
           # Construct the toolchain path robustly
           $toolchain = Join-Path $env:GITHUB_WORKSPACE 'vcpkg\scripts\buildsystems\vcpkg.cmake'
