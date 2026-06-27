@@ -2,6 +2,7 @@
     "name": "meteor-stego",
     "version": "0.1.0",
     "description": "Syllable-level Meteor steganographic library",
+    "builtin-baseline": "a42af01b72ec76325217f9d4d6a5a59e23b02b65",
     "dependencies": [
         "libsodium",
         "curl",
