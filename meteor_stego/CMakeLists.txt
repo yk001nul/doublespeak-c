@@ -118,9 +118,8 @@ endif()
 
 if(METEOR_USE_LIBHYPHEN)
     find_library(HYPHEN_LIB NAMES hyphen REQUIRED)
-    if(NOT HYPHEN_LIB)
-        message(FATAL_ERROR "libhyphen not found. Disable METEOR_USE_LIBHYPHEN to use the heuristic.")
-    endif()
+    find_path(HYPHEN_INCLUDE_DIR NAMES hyphen.h REQUIRED)
+    message(STATUS "libhyphen: ${HYPHEN_LIB}  headers: ${HYPHEN_INCLUDE_DIR}")
 endif()
 
 # ── Meteor library ────────────────────────────────────────────────────────────
@@ -155,13 +154,15 @@ target_link_libraries(meteor PRIVATE
 
 if(METEOR_USE_LIBHYPHEN)
     target_compile_definitions(meteor PRIVATE METEOR_USE_LIBHYPHEN)
+    target_include_directories(meteor PRIVATE ${HYPHEN_INCLUDE_DIR})
     target_link_libraries(meteor PRIVATE ${HYPHEN_LIB})
 endif()
 
 if(WIN32)
     set_target_properties(meteor PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 else()
-    set_target_properties(meteor PROPERTIES C_VISIBILITY_PRESET hidden)
+    # Export public API symbols even with hidden visibility
+    set_target_properties(meteor PROPERTIES C_VISIBILITY_PRESET default)
     target_link_libraries(meteor PRIVATE m)
 endif()
 
@@ -232,20 +233,53 @@ add_custom_target(server_health
     USES_TERMINAL
 )
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# ── Tests ────────────────────────────────────────────────────────[...]
 
 enable_testing()
 
 set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism)
 
+# Internal source files needed by tests
+set(INTERNAL_SOURCES
+    src/prng.c
+    src/bits.c
+    src/meteor_core.c
+    src/syllabifier.c
+    src/llm_client.c
+    src/encode.c
+    src/decode.c
+)
+
 foreach(test ${ALL_TESTS})
-    add_executable(test_${test} tests/test_${test}.c)
-    target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS})
+    if(test MATCHES "roundtrip|determinism")
+        # These tests use the public meteor API, don't compile internal sources
+        add_executable(test_${test} tests/test_${test}.c)
+    else()
+        # Other tests need internal sources for unit testing
+        add_executable(test_${test} tests/test_${test}.c ${INTERNAL_SOURCES})
+    endif()
+    
+    target_include_directories(test_${test} PRIVATE
+        include
+        ${cjson_SOURCE_DIR}
+    )
+    target_compile_definitions(test_${test} PRIVATE ${SODIUM_COMPILE_DEFS} ${HTTP_COMPILE_DEF})
     target_link_libraries(test_${test} PRIVATE
-        meteor
         ${SODIUM_TARGET}
         ${SODIUM_EXTRA_LIBS}
+        ${HTTP_LINK_LIBS}
+        cjson
     )
+    if(NOT WIN32)
+        target_link_libraries(test_${test} PRIVATE m)
+    endif()
+    
+    # Link roundtrip and determinism tests against the meteor library
+    if(test MATCHES "roundtrip|determinism")
+        add_dependencies(test_${test} meteor)
+        target_link_libraries(test_${test} PRIVATE meteor)
+    endif()
+    
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
 

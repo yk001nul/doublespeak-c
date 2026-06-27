@@ -3,7 +3,7 @@
  * libhyphen tests are skipped if METEOR_USE_LIBHYPHEN is not set.
  */
 #include "../src/syllabifier.h"
-
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

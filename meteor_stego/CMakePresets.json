@@ -154,6 +154,16 @@
             "configurePreset": "x64-release"
         },
         {
+            "name": "x64-debug-vcpkg-build",
+            "displayName": "Build x64 Debug + vcpkg",
+            "configurePreset": "x64-debug-vcpkg"
+        },
+        {
+            "name": "x64-release-vcpkg-build",
+            "displayName": "Build x64 Release + vcpkg",
+            "configurePreset": "x64-release-vcpkg"
+        },
+        {
             "name": "linux-debug-build",
             "displayName": "Build Linux Debug",
             "configurePreset": "linux-debug"
@@ -192,6 +202,18 @@
             "output": {
                 "outputOnFailure": true
             }
+        },
+        {
+            "name": "x64-debug-vcpkg-test",
+            "displayName": "Test x64 Debug + vcpkg",
+            "configurePreset": "x64-debug-vcpkg",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "x64-release-vcpkg-test",
+            "displayName": "Test x64 Release + vcpkg",
+            "configurePreset": "x64-release-vcpkg",
+            "output": { "outputOnFailure": true }
         },
         {
             "name": "linux-debug-test",
