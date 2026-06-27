@@ -73,11 +73,18 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "--- Install dependencies (Windows) ---"
-          # clone and bootstrap vcpkg into the workspace (VCPKG_ROOT is job-level)
+          # Clear any stale vcpkg registry cache
+          $registryCache = "$env:LOCALAPPDATA\vcpkg\registries"
+          if (Test-Path $registryCache) {
+            Write-Host "Removing stale registry cache at: $registryCache"
+            Remove-Item -Path $registryCache -Recurse -Force
+          }
+          
+          # Clone and bootstrap vcpkg
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
-
-          # verify vcpkg scripts/buildsystems exists and the toolchain file is present
+          
+          # Verify toolchain exists
           $toolchainPath = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
           if (-not (Test-Path $toolchainPath)) {
             Write-Host "vcpkg toolchain file missing at: $toolchainPath"
@@ -87,8 +94,7 @@ jobs:
           } else {
             Write-Host "Found vcpkg toolchain at: $toolchainPath"
           }
-
-          # optional: install curl for x64-windows and integrate
+          
           & "$env:VCPKG_ROOT\vcpkg.exe" install curl:x64-windows
           & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
 
@@ -205,19 +211,32 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Write-Host "--- Install dependencies (Windows - release) ---"
+          Write-Host "--- Install dependencies (Windows) ---"
+          # Clear any stale vcpkg registry cache
+          $registryCache = "$env:LOCALAPPDATA\vcpkg\registries"
+          if (Test-Path $registryCache) {
+            Write-Host "Removing stale registry cache at: $registryCache"
+            Remove-Item -Path $registryCache -Recurse -Force
+          }
+          
+          # Clone and bootstrap vcpkg
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
-
+          
+          # Verify toolchain exists
           $toolchainPath = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
           if (-not (Test-Path $toolchainPath)) {
-            Write-Host "vcpkg toolchain missing at $toolchainPath"
+            Write-Host "vcpkg toolchain file missing at: $toolchainPath"
+            Write-Host "Listing $env:VCPKG_ROOT (first 200 entries):"
             Get-ChildItem -Path $env:VCPKG_ROOT -Recurse -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { Write-Host $_.FullName }
             exit 1
+          } else {
+            Write-Host "Found vcpkg toolchain at: $toolchainPath"
           }
-
+          
+          & "$env:VCPKG_ROOT\vcpkg.exe" install curl:x64-windows
           & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
-
+          
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
