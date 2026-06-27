@@ -1,3 +1,4 @@
+# (modified to set VCPKG_ROOT job-wide and to harden Windows vcpkg/configure steps)
 name: CI / CD
 
 on:
@@ -12,6 +13,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # job-wide environment so all steps can reference the same vcpkg root
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +37,7 @@ jobs:
             os: windows-latest
             configure_preset: x64-debug-vcpkg
             build_preset: x64-debug-vcpkg-build
-            test_preset: x64-debug-vcpkg-test                        
+            test_preset: x64-debug-vcpkg-test
             artifact: meteor-windows-x64
 
           - name: macOS
@@ -68,16 +72,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Clone and bootstrap vcpkg in the workspace (ensures vcpkg is present)
-          git clone https://github.com/microsoft/vcpkg.git vcpkg
-          .\vcpkg\bootstrap-vcpkg.bat
-      
-          # Install curl for x64-windows triplet
-          .\vcpkg\vcpkg.exe install curl:x64-windows
-      
-          # Optional: integrate (useful for Visual Studio)
-          .\vcpkg\vcpkg.exe integrate install
-          
+          Write-Host "--- Install dependencies (Windows) ---"
+          # clone and bootstrap vcpkg into the workspace (VCPKG_ROOT is job-level)
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+
+          # verify vcpkg scripts/buildsystems exists and the toolchain file is present
+          $toolchainPath = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
+          if (-not (Test-Path $toolchainPath)) {
+            Write-Host "vcpkg toolchain file missing at: $toolchainPath"
+            Write-Host "Listing $env:VCPKG_ROOT (first 200 entries):"
+            Get-ChildItem -Path $env:VCPKG_ROOT -Recurse -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          } else {
+            Write-Host "Found vcpkg toolchain at: $toolchainPath"
+          }
+
+          # optional: install curl for x64-windows and integrate
+          & "$env:VCPKG_ROOT\vcpkg.exe" install curl:x64-windows
+          & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
+
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -88,28 +102,32 @@ jobs:
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: |
           echo "--- Configure (Windows) ---"
-          
-          # Construct the toolchain path robustly
-          $toolchain = Join-Path $env:GITHUB_WORKSPACE 'vcpkg\scripts\buildsystems\vcpkg.cmake'
-          Write-Host "Using toolchain: $toolchain"
-          
+          echo "GITHUB_WORKSPACE = $env:GITHUB_WORKSPACE"
+          echo "VCPKG_ROOT      = $env:VCPKG_ROOT"
+
+          # Build the toolchain path from VCPKG_ROOT (robust)
+          $toolchain = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
+          Write-Host "Expecting vcpkg toolchain at: $toolchain"
+
           if (-not (Test-Path $toolchain)) {
-            Write-Host "Toolchain not found. Listing vcpkg directory:"
-            Get-ChildItem -Path $env:GITHUB_WORKSPACE\vcpkg -Recurse -ErrorAction SilentlyContinue | Select-Object -First 20
-            Write-Error "vcpkg toolchain file not found"
+            Write-Host "vcpkg toolchain file not found at $toolchain"
+            Write-Host "Listing vcpkg/scripts/buildsystems (if present):"
+            if (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems')) {
+              Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems') -Recurse | ForEach-Object { Write-Host $_.FullName }
+            } else {
+              Write-Host "vcpkg/scripts/buildsystems not found under $env:VCPKG_ROOT"
+            }
             exit 1
           }
-      
+
           cmake --preset ${{ matrix.configure_preset }} `
             -S meteor_stego `
             -B meteor_stego/out/build/${{ matrix.configure_preset }} `
             -DCMAKE_MAKE_PROGRAM=ninja `
             -DMETEOR_USE_LIBHYPHEN=OFF `
-            "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain"
 
       - name: Configure (Linux/macOS)
         if: runner.os != 'Windows'
@@ -124,7 +142,7 @@ jobs:
             -DCMAKE_MAKE_PROGRAM=ninja \
             -DMETEOR_USE_LIBHYPHEN=OFF \
             ${{ matrix.extra_cmake || '' }}
-          
+
       - name: Build
         working-directory: meteor_stego
         run: cmake --build --preset ${{ matrix.build_preset }} --parallel
@@ -143,6 +161,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     strategy:
       fail-fast: false
       matrix:
@@ -185,9 +205,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg.git vcpkg
-          .\vcpkg\bootstrap-vcpkg.bat
-          .\vcpkg\vcpkg.exe integrate install
+          Write-Host "--- Install dependencies (Windows - release) ---"
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+
+          $toolchainPath = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
+          if (-not (Test-Path $toolchainPath)) {
+            Write-Host "vcpkg toolchain missing at $toolchainPath"
+            Get-ChildItem -Path $env:VCPKG_ROOT -Recurse -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+          & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
@@ -209,33 +238,25 @@ jobs:
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: |
-          echo "--- Configure (Windows) ---"
+          echo "--- Configure (Windows - release) ---"
           echo "GITHUB_WORKSPACE = $env:GITHUB_WORKSPACE"
-          echo "VCPKG_ROOT = $env:VCPKG_ROOT"
-          Write-Host "Listing vcpkg buildsystems directory (if present):"
-          if (Test-Path -Path "$env:GITHUB_WORKSPACE\\vcpkg\\scripts\\buildsystems") {
-            Get-ChildItem -Path "$env:GITHUB_WORKSPACE\\vcpkg\\scripts\\buildsystems" -Recurse
-          } else {
-            Write-Host "vcpkg buildsystems directory not found"
-          }
-      
-          # Build and check the vcpkg toolchain path robustly
-          $toolchain = Join-Path $env:GITHUB_WORKSPACE 'vcpkg\scripts\buildsystems\vcpkg.cmake'
+          echo "VCPKG_ROOT      = $env:VCPKG_ROOT"
+
+          $toolchain = Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'
           Write-Host "Expecting vcpkg toolchain at: $toolchain"
+
           if (-not (Test-Path $toolchain)) {
-            Write-Host "Directory listing for vcpkg/scripts/buildsystems:"
-            if (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'vcpkg\scripts\buildsystems')) {
-              Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'vcpkg\scripts\buildsystems') -Recurse | ForEach-Object { Write-Host $_.FullName }
+            Write-Host "vcpkg toolchain file not found at $toolchain"
+            Write-Host "Listing vcpkg/scripts/buildsystems (if present):"
+            if (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems')) {
+              Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems') -Recurse | ForEach-Object { Write-Host $_.FullName }
             } else {
-              Write-Host "vcpkg/scripts/buildsystems not found"
+              Write-Host "vcpkg/scripts/buildsystems not found under $env:VCPKG_ROOT"
             }
-            Write-Error "vcpkg toolchain file not found at $toolchain"
             exit 1
           }
-      
+
           cmake --preset ${{ matrix.configure_preset }} `
             -S meteor_stego `
             -B meteor_stego/out/build/${{ matrix.configure_preset }} `
