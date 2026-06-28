@@ -287,6 +287,14 @@ jobs:
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
 
+      - name: List downloaded structure
+        shell: bash
+        run: |
+          echo "=== Directory structure ==="
+          find . -type f \( -name "*.exe" -o -name "*.dll" -o -name "*.lib" -o -name "*.so" -o -name "*.dylib" -o -name "meteor" \) | sort
+          echo "=== All files in artifacts ==="
+          ls -lR htmlcodec-c-windows-x64 htmlcodec-c-linux-x64 2>/dev/null || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
