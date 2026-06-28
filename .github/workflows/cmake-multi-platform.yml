@@ -291,17 +291,22 @@ jobs:
         shell: bash
         run: |
           echo "=== Directory structure ==="
-          find . -type f \( -name "*.exe" -o -name "*.dll" -o -name "*.lib" -o -name "*.so" -o -name "*.dylib" -o -name "meteor" \) | sort
-          echo "=== All files in artifacts ==="
-          ls -lR htmlcodec-c-windows-x64 htmlcodec-c-linux-x64 2>/dev/null || true
+          find . -type f \( -name "*.h" -o -name "*.exe" -o -name "*.dll" -o -name "*.lib" -o -name "*.so" -o -name "*.dylib" -o -name "meteor" \) | sort
+          echo "=== All files in artifacts ==="          
+
+      - name: Zip release assets
+        run: |
+          zip -r meteor-linux-x64.zip meteor-linux-x64
+          zip -r meteor-windows-x64.zip meteor-windows-x64
+          zip -r meteor-macos.zip meteor-macos
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            meteor-linux-x64/**
-            meteor-windows-x64/**
-            meteor-macos/**
+            meteor-linux-x64.zip
+            meteor-windows-x64.zip
+            meteor-macos.zip
           draft: false
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
