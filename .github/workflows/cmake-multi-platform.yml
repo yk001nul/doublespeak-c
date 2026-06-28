@@ -89,7 +89,7 @@ jobs:
           
           # Clone vcpkg with a specific stable commit (adjust hash as needed)
           Write-Host "Cloning vcpkg repository..."
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
           
