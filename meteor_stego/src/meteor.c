@@ -57,7 +57,8 @@ MeteorCtx* meteor_create(const MeteorConfig* config)
         const char* env = getenv("METEOR_NUM_THREADS");
         if (env) threads = atoi(env);
     }
-    ctx->num_threads = (threads > 0) ? threads : 1;
+    ctx->num_threads   = (threads > 0) ? threads : 1;
+    ctx->chat_template = config->chat_template;   /* 0 = PHI3 by default */
 
     strncpy(ctx->llm_url,
             config->llm_url ? config->llm_url : "http://127.0.0.1:8080",
@@ -67,7 +68,8 @@ MeteorCtx* meteor_create(const MeteorConfig* config)
         strncpy(ctx->hyphen_dict_path, config->hyphen_dict,
                 sizeof(ctx->hyphen_dict_path) - 1);
 
-    ctx->llm = llm_client_create(ctx->llm_url, ctx->num_candidates, ctx->llm_timeout_ms);
+    ctx->llm = llm_client_create(ctx->llm_url, ctx->num_candidates,
+                                  ctx->llm_timeout_ms, ctx->chat_template);
     if (!ctx->llm) { free(ctx); return NULL; }
 
     ctx->syl = syllabifier_create(ctx->hyphen_dict_path[0] ? ctx->hyphen_dict_path : NULL);

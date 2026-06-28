@@ -80,7 +80,7 @@ static void free_words(char** words, int count)
     free(words);
 }
 
-/* Run one decode step; returns bits recovered. Frees dist, resp, syl arrays. */
+/* Run one decode step; returns bits recovered. Frees dist. */
 static int run_decode_step(const char*  chosen_text,
                            MeteorDist*  dist,
                            MeteorPRNG*  prng,
@@ -139,6 +139,8 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         memcpy(full_recon, starting_context, recon_len);
     }
     full_recon[recon_len] = '\0';
+
+    llm_client_trace_phase("DECODE");
 
     int done = 0;
 

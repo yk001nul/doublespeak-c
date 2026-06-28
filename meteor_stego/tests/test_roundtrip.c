@@ -17,9 +17,18 @@ static int failed = 0;
     do { if (cond) { printf("[PASS] %s\n", msg); passed++; } \
          else { printf("[FAIL] %s  (line %d)\n", msg, __LINE__); failed++; } } while(0)
 
+/* Read METEOR_CHAT_TEMPLATE env var: "chatml" → CHATML, else PHI3 (default). */
+static MeteorChatTemplate get_chat_template(void)
+{
+    const char* t = getenv("METEOR_CHAT_TEMPLATE");
+    if (t && strcmp(t, "chatml") == 0) return METEOR_TEMPLATE_CHATML;
+    return METEOR_TEMPLATE_PHI3;
+}
+
 static int server_reachable(void)
 {
-    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 3000);
+    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 3000,
+                                      get_chat_template());
     if (!c) return 0;
     int ok = llm_client_health(c);
     llm_client_destroy(c);
@@ -46,6 +55,7 @@ static void test_roundtrip(const char* message_str, const char* context)
         .hyphen_dict    = NULL,
         .max_steps      = 256,
         .llm_timeout_ms = 30000,
+        .chat_template  = get_chat_template(),
     };
 
     MeteorCtx* ctx = meteor_create(&cfg);

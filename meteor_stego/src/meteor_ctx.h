@@ -18,7 +18,8 @@ struct MeteorCtx {
     int      num_candidates;
     int      max_steps;
     int      llm_timeout_ms;
-    int      num_threads;         /* resolved value, always >= 1 */
+    int                num_threads;         /* resolved value, always >= 1 */
+    MeteorChatTemplate chat_template;
     char     llm_url[256];
     char     hyphen_dict_path[512];
 

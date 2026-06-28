@@ -12,6 +12,20 @@ extern "C" {
 
 typedef struct MeteorCtx MeteorCtx;
 
+/* ── Chat template ───────────────────────────────────────────────────────── */
+
+/*
+ * Selects the prompt wrapper tokens expected by the loaded model.
+ * Must match the model family running in llama-server.
+ *
+ *   PHI3   — Phi-3.x instruct:  <|user|> … <|end|> <|assistant|>
+ *   CHATML  — ChatML / Qwen2.x:  <|im_start|>user … <|im_end|> <|im_start|>assistant
+ */
+typedef enum {
+    METEOR_TEMPLATE_PHI3   = 0,
+    METEOR_TEMPLATE_CHATML = 1,
+} MeteorChatTemplate;
+
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -52,6 +66,7 @@ typedef struct {
      * an identical thread count.
      */
     int         num_threads;     /* llama-server --threads (0 = env/default) */
+    MeteorChatTemplate chat_template; /* prompt wrapper; default METEOR_TEMPLATE_PHI3 */
 } MeteorConfig;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
