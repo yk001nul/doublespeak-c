@@ -12,6 +12,13 @@
 /* Maximum syllable string length for joining a partial word. */
 #define MAX_PARTIAL_LEN 512
 
+static int trace_enc_enabled(void)
+{
+    static int s = -1;
+    if (s < 0) s = (getenv("METEOR_TRACE") != NULL);
+    return s;
+}
+
 char* meteor_encode_impl(struct MeteorCtx* ctx,
                          const uint8_t*    message,
                          size_t            msg_len,
@@ -53,6 +60,8 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
     size_t bit_offset = 0;
     int    steps      = 0;
 
+    llm_client_trace_phase("ENCODE");
+
     while ((bit_offset < total_bits || partial_word[0] != '\0') && steps < ctx->max_steps) {
         int is_new_word = (partial_word[0] == '\0');
 
@@ -89,6 +98,15 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
 
         bit_offset += (size_t)step.cp_len;
         steps++;
+
+        if (trace_enc_enabled())
+            fprintf(stderr, "  ENC step=%d partial='%s' chosen='%s' cp=%d bits=%zu/%zu\n",
+                    steps,
+                    partial_word,
+                    step.chosen[0] == '\x01' ? "~" : step.chosen,
+                    step.cp_len,
+                    bit_offset,
+                    total_bits);
 
         if (strcmp(step.chosen, EOW_TOKEN) == 0) {
             /* end-of-word: flush partial_word to full_text */

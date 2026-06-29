@@ -12,6 +12,13 @@ set PORT=@METEOR_LLM_PORT@
 set SEED=@METEOR_LLM_SEED@
 set LOGFILE=%SCRIPT_DIR%llama_server.log
 
+REM Thread count: arg 2 -> METEOR_NUM_THREADS env var -> 1
+REM Raise above 1 only when both encoder and decoder run on the same machine
+REM with the same thread count -- otherwise cross-machine determinism is lost.
+set THREADS=%~2
+if "%THREADS%"=="" set THREADS=%METEOR_NUM_THREADS%
+if "%THREADS%"=="" set THREADS=1
+
 if not exist "%LLAMA_SERVER%" (
     echo ERROR: llama-server.exe not found at %LLAMA_SERVER%
     echo Run: cmake --build . --target copy_llama_server
@@ -27,18 +34,19 @@ echo Starting llama-server...
 echo   model:   %MODEL_PATH%
 echo   port:    %PORT%
 echo   seed:    %SEED%
-echo   threads: 1  (required for determinism)
+echo   threads: %THREADS%
 
 start /B "" "%LLAMA_SERVER%"  ^
-    --model   "%MODEL_PATH%"   ^
-    --port    %PORT%           ^
-    --host    127.0.0.1        ^
-    --threads 1                ^
-    --seed    %SEED%           ^
-    --temp    0.0              ^
-    --ctx-size 2048            ^
-    --no-mmap                  ^
-    --log-disable              ^
+    --model            "%MODEL_PATH%"   ^
+    --port             %PORT%           ^
+    --host             127.0.0.1        ^
+    --threads          %THREADS%        ^
+    --seed             %SEED%           ^
+    --temp             0.0              ^
+    --ctx-size         2048             ^
+    --no-mmap                           ^
+    --no-cont-batching                  ^
+    --log-disable                       ^
     >> "%LOGFILE%" 2>&1
 
 echo llama-server launched. Check %LOGFILE% if issues arise.

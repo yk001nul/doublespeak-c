@@ -17,6 +17,11 @@ SEED="@METEOR_LLM_SEED@"
 LOGFILE="${SCRIPT_DIR}/llama_server.log"
 PIDFILE="${SCRIPT_DIR}/llama_server.pid"
 
+# Thread count: positional arg 2 → METEOR_NUM_THREADS env var → 1
+# Raise above 1 only when both encoder and decoder run on the same machine
+# with the same thread count — otherwise cross-machine determinism is lost.
+THREADS="${2:-${METEOR_NUM_THREADS:-1}}"
+
 if [[ ! -f "$LLAMA_SERVER" ]]; then
     echo "ERROR: llama-server not found at $LLAMA_SERVER" >&2
     echo "Run: cmake --build . --target copy_llama_server" >&2
@@ -52,19 +57,20 @@ echo "Starting llama-server..."
 echo "  model:   $MODEL_PATH"
 echo "  port:    $PORT"
 echo "  seed:    $SEED"
-echo "  threads: 1  (required for determinism)"
+echo "  threads: $THREADS$([ "$THREADS" -eq 1 ] && echo '  (cross-machine safe)' || echo '  (single-machine only — cross-machine determinism requires matching thread count)')"
 echo "  log:     $LOGFILE"
 
-"$LLAMA_SERVER"       \
-    --model   "$MODEL_PATH" \
-    --port    "$PORT"       \
-    --host    127.0.0.1     \
-    --threads 1             \
-    --seed    "$SEED"       \
-    --temp    0.0           \
-    --ctx-size 2048         \
-    --no-mmap               \
-    --log-disable           \
+"$LLAMA_SERVER"                \
+    --model            "$MODEL_PATH"   \
+    --port             "$PORT"          \
+    --host             127.0.0.1        \
+    --threads          "$THREADS"       \
+    --seed             "$SEED"          \
+    --temp             0.0              \
+    --ctx-size         2048             \
+    --no-mmap                           \
+    --no-cont-batching                  \
+    --log-disable                       \
     >> "$LOGFILE" 2>&1 &
 
 echo $! > "$PIDFILE"

@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <sodium.h>
 
 /* ── lifecycle ────────────────────────────────────────────────────────────── */
@@ -50,6 +51,15 @@ MeteorCtx* meteor_create(const MeteorConfig* config)
     ctx->max_steps      = config->max_steps      > 0 ? config->max_steps      : 256;
     ctx->llm_timeout_ms = config->llm_timeout_ms > 0 ? config->llm_timeout_ms : 30000;
 
+    /* Resolve thread count: config field → METEOR_NUM_THREADS env var → 1 */
+    int threads = config->num_threads;
+    if (threads <= 0) {
+        const char* env = getenv("METEOR_NUM_THREADS");
+        if (env) threads = atoi(env);
+    }
+    ctx->num_threads   = (threads > 0) ? threads : 1;
+    ctx->chat_template = config->chat_template;   /* 0 = PHI3 by default */
+
     strncpy(ctx->llm_url,
             config->llm_url ? config->llm_url : "http://127.0.0.1:8080",
             sizeof(ctx->llm_url) - 1);
@@ -58,7 +68,8 @@ MeteorCtx* meteor_create(const MeteorConfig* config)
         strncpy(ctx->hyphen_dict_path, config->hyphen_dict,
                 sizeof(ctx->hyphen_dict_path) - 1);
 
-    ctx->llm = llm_client_create(ctx->llm_url, ctx->num_candidates, ctx->llm_timeout_ms);
+    ctx->llm = llm_client_create(ctx->llm_url, ctx->num_candidates,
+                                  ctx->llm_timeout_ms, ctx->chat_template);
     if (!ctx->llm) { free(ctx); return NULL; }
 
     ctx->syl = syllabifier_create(ctx->hyphen_dict_path[0] ? ctx->hyphen_dict_path : NULL);
@@ -148,4 +159,19 @@ int meteor_llm_health(MeteorCtx* ctx)
 void meteor_free(void* ptr)
 {
     free(ptr);
+}
+
+int meteor_get_num_threads(MeteorCtx* ctx)
+{
+    if (!ctx) return 1;
+    return ctx->num_threads;
+}
+
+char* meteor_get_server_thread_flag(MeteorCtx* ctx)
+{
+    int n = ctx ? ctx->num_threads : 1;
+    char* buf = (char*)malloc(32);
+    if (!buf) return NULL;
+    snprintf(buf, 32, "--threads %d", n);
+    return buf;
 }

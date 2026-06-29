@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include "../include/meteor.h"
 
 typedef struct {
     char  text[64];
@@ -13,13 +14,15 @@ typedef struct {
 } LLMResponse;
 
 typedef struct {
-    char  base_url[256];
-    int   timeout_ms;
-    int   max_candidates;
-    void* curl_handle;     /* CURL* — opaque to callers */
+    char               base_url[256];
+    int                timeout_ms;
+    int                max_candidates;
+    MeteorChatTemplate chat_template;
+    void*              curl_handle;     /* CURL* — opaque to callers */
 } LLMClient;
 
-LLMClient*   llm_client_create(const char* base_url, int max_candidates, int timeout_ms);
+LLMClient*   llm_client_create(const char* base_url, int max_candidates, int timeout_ms,
+                                MeteorChatTemplate chat_template);
 void         llm_client_destroy(LLMClient* client);
 
 /*
@@ -41,3 +44,17 @@ void llm_response_free(LLMResponse* resp);
 
 /* Returns 1 if the server at base_url/health responds OK, 0 otherwise. */
 int llm_client_health(LLMClient* client);
+
+/*
+ * Erase the KV cache for the given slot (POST /slots/{id_slot} {"action":"erase"}).
+ * Returns 1 on success, 0 if the endpoint is unavailable or the request fails.
+ * Call between encode and decode phases to clear accumulated server state.
+ */
+int llm_client_erase_slot(LLMClient* client, int id_slot);
+
+/*
+ * Trace support — call once at the start of each encode/decode phase.
+ * If the METEOR_TRACE env-var is set, prints a "=== phase ===" header and
+ * resets the per-session call counter so encoder and decoder calls align.
+ */
+void llm_client_trace_phase(const char* phase);

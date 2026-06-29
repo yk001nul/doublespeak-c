@@ -18,9 +18,18 @@ static int failed = 0;
     do { if (cond) { printf("[PASS] %s\n", msg); passed++; } \
          else { printf("[FAIL] %s  (line %d)\n", msg, __LINE__); failed++; } } while(0)
 
+/* Read METEOR_CHAT_TEMPLATE env var: "chatml" → CHATML, else PHI3 (default). */
+static MeteorChatTemplate get_chat_template(void)
+{
+    const char* t = getenv("METEOR_CHAT_TEMPLATE");
+    if (t && strcmp(t, "chatml") == 0) return METEOR_TEMPLATE_CHATML;
+    return METEOR_TEMPLATE_PHI3;
+}
+
 static int server_reachable(void)
 {
-    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 3000);
+    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 3000,
+                                      get_chat_template());
     if (!c) return 0;
     int ok = llm_client_health(c);
     llm_client_destroy(c);
@@ -29,7 +38,8 @@ static int server_reachable(void)
 
 static void test_dist_determinism(const char* context, const char* partial, int is_new)
 {
-    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 30000);
+    LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 30000,
+                                      get_chat_template());
     if (!c) { printf("[SKIP] client creation failed\n"); return; }
 
     LLMResponse* r1 = llm_client_get_syllable_dist(c, context, partial, is_new);

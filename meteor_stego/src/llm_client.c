@@ -86,7 +86,8 @@ static void parse_url(const char* url, wchar_t* host, size_t hlen,
     if (path) swprintf(path, plen, L"%s", L"");
 }
 
-LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeout_ms)
+LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeout_ms,
+                              MeteorChatTemplate chat_template)
 {
     LLMClient* c = (LLMClient*)calloc(1, sizeof(LLMClient));
     if (!c) return NULL;
@@ -94,6 +95,7 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
+    c->chat_template  = chat_template;
     c->curl_handle    = NULL; /* unused in WinHTTP backend */
 
     struct LLMClientImpl* impl = (struct LLMClientImpl*)calloc(1, sizeof(struct LLMClientImpl));
@@ -218,7 +220,8 @@ static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata
     return growbuf_append(gb, ptr, n) == 0 ? n : 0;
 }
 
-LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeout_ms)
+LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeout_ms,
+                              MeteorChatTemplate chat_template)
 {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     LLMClient* c = (LLMClient*)calloc(1, sizeof(LLMClient));
@@ -227,6 +230,7 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
+    c->chat_template  = chat_template;
     c->curl_handle    = curl_easy_init();
     if (!c->curl_handle) { free(c); return NULL; }
     return c;
@@ -317,30 +321,72 @@ static const char* CONTINUATION_GRAMMAR =
     "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws       ::= [ \\t\\n]*\n";
 
-static char* build_new_word_prompt(const char* ctx, int n)
+/* Return the three chat-wrapper token strings for the selected template. */
+static void tmpl_tokens(MeteorChatTemplate t,
+                        const char** u_start,
+                        const char** u_end,
+                        const char** a_start)
 {
-    char* buf = (char*)malloc(4096);
-    if (!buf) return NULL;
-    snprintf(buf, 4096,
+    if (t == METEOR_TEMPLATE_CHATML) {
+        *u_start = "<|im_start|>user\n";
+        *u_end   = "<|im_end|>\n";
+        *a_start = "<|im_start|>assistant\n";
+    } else {                              /* METEOR_TEMPLATE_PHI3 (default) */
+        *u_start = "<|user|>\n";
+        *u_end   = "<|end|>\n";
+        *a_start = "<|assistant|>\n";
+    }
+}
+
+static char* build_new_word_prompt(const char* ctx, int n, MeteorChatTemplate tmpl)
+{
+    const char *u_start, *u_end, *a_start;
+    tmpl_tokens(tmpl, &u_start, &u_end, &a_start);
+
+    static const char body[] =
         "Text so far: \"%s\"\n"
         "You are generating the next word one syllable at a time.\n"
         "Provide the %d most natural first syllables for the next word.\n"
-        "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
-        ctx, n);
+        "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.";
+
+    size_t ctx_len = ctx ? strlen(ctx) : 0;
+    size_t buf_len = strlen(u_start) + strlen(u_end) + strlen(a_start)
+                     + sizeof(body) + ctx_len + 32;
+    char* buf = (char*)malloc(buf_len);
+    if (!buf) return NULL;
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, "%s", u_start);
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, body, ctx ? ctx : "", n);
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, "%s%s", u_end, a_start);
     return buf;
 }
 
-static char* build_continuation_prompt(const char* ctx, const char* partial, int n)
+static char* build_continuation_prompt(const char* ctx, const char* partial, int n,
+                                        MeteorChatTemplate tmpl)
 {
-    char* buf = (char*)malloc(4096);
-    if (!buf) return NULL;
-    snprintf(buf, 4096,
+    const char *u_start, *u_end, *a_start;
+    tmpl_tokens(tmpl, &u_start, &u_end, &a_start);
+
+    static const char body[] =
         "Text so far: \"%s\"\n"
         "Word being built: \"%s\"\n"
         "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
         "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
-        "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
-        ctx, partial, n - 1, partial);
+        "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.";
+
+    size_t ctx_len     = ctx     ? strlen(ctx)     : 0;
+    size_t partial_len = partial ? strlen(partial) : 0;
+    size_t buf_len     = strlen(u_start) + strlen(u_end) + strlen(a_start)
+                         + sizeof(body) + ctx_len + partial_len + 32;
+    char* buf = (char*)malloc(buf_len);
+    if (!buf) return NULL;
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, "%s", u_start);
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, body,
+                    ctx ? ctx : "", partial ? partial : "", n - 1);
+    pos += snprintf(buf + pos, buf_len - (size_t)pos, "%s%s", u_end, a_start);
     return buf;
 }
 
@@ -348,6 +394,58 @@ static void map_eow(char* text)
 {
     if (strcmp(text, "\xc2\xb7") == 0)
         strcpy(text, "\x01");
+}
+
+/*
+ * Remove any candidate that is a proper prefix of another candidate.
+ *
+ * After this filter, no candidate text can be a prefix of any other, which
+ * guarantees that the decoder's prefix-scan always produces a unique match —
+ * even when the model returns overlapping syllables like "re" / "rest" / "rec".
+ *
+ * EOW_TOKEN ("\x01") is never removed; it cannot be an alphabetic prefix.
+ */
+static void filter_prefix_candidates(LLMResponse* resp)
+{
+    if (!resp || resp->count < 2) return;
+
+    int mark[64] = {0};
+    if (resp->count > 64) return;
+
+    for (int i = 0; i < resp->count; i++) {
+        const char* ci = resp->candidates[i].text;
+        if (ci[0] == '\x01') continue;
+        size_t ci_len = strlen(ci);
+        for (int j = 0; j < resp->count; j++) {
+            if (j == i) continue;
+            const char* cj = resp->candidates[j].text;
+            if (cj[0] == '\x01') continue;
+            size_t cj_len = strlen(cj);
+            if (cj_len > ci_len && strncmp(cj, ci, ci_len) == 0) {
+                mark[i] = 1;
+                break;
+            }
+        }
+    }
+
+    int new_count = 0;
+    for (int i = 0; i < resp->count; i++) {
+        if (!mark[i]) {
+            if (new_count != i)
+                resp->candidates[new_count] = resp->candidates[i];
+            new_count++;
+        }
+    }
+    if (new_count == 0) return;
+
+    float total = 0.0f;
+    for (int i = 0; i < new_count; i++)
+        total += resp->candidates[i].prob;
+    if (total > 0.0f)
+        for (int i = 0; i < new_count; i++)
+            resp->candidates[i].prob /= total;
+
+    resp->count = new_count;
 }
 
 static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
@@ -376,22 +474,53 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     cJSON* item; int i = 0;
     cJSON_ArrayForEach(item, obj) {
         if (i >= n) break;
-        if (!cJSON_IsNumber(item)) { i++; continue; }
+        if (!cJSON_IsNumber(item)) continue;
+        const char* key = item->string;
+        if (!key) continue;
+        /* Skip multi-syllable words (>5 bytes, not the EOW marker).
+         * At temp=0 the model sometimes emits whole words like "report" or
+         * "stated"; those would be re-split by the syllabifier differently
+         * from the single token the encoder chose, corrupting bit recovery. */
+        size_t klen = strlen(key);
+        if (klen > 5 && strcmp(key, "\xc2\xb7") != 0) continue;
         float p = (float)item->valuedouble;
         if (p < 0.0f) p = 0.0f;
-        strncpy(resp->candidates[i].text, item->string, 63);
-        resp->candidates[i].text[63] = '\0';
-        map_eow(resp->candidates[i].text);
-        resp->candidates[i].prob = p;
-        sum += p;
+
+        char mapped_key[64];
+        strncpy(mapped_key, key, 63);
+        mapped_key[63] = '\0';
+        map_eow(mapped_key);
+
+        /* Deduplicate: if a candidate with this text already exists, sum
+         * probabilities rather than adding a second entry.  Duplicate keys
+         * arise when the grammar sampler returns the same syllable via two
+         * derivation paths; a second slot range for the same text would make
+         * the encoder and decoder disagree on which slot was chosen. */
+        int found = 0;
+        for (int j = 0; j < resp->count; j++) {
+            if (strcmp(resp->candidates[j].text, mapped_key) == 0) {
+                resp->candidates[j].prob += p;
+                sum += p;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            strncpy(resp->candidates[resp->count].text, mapped_key, 63);
+            resp->candidates[resp->count].text[63] = '\0';
+            resp->candidates[resp->count].prob = p;
+            sum += p;
+            resp->count++;
+        }
         i++;
-        resp->count = i;
     }
     cJSON_Delete(obj);
 
     if (sum > 0.0f)
         for (int j = 0; j < resp->count; j++)
             resp->candidates[j].prob /= sum;
+
+    filter_prefix_candidates(resp);
 
     return resp;
 }
@@ -417,6 +546,24 @@ static LLMResponse* uniform_fallback(int n)
     return resp;
 }
 
+/* ── trace support ──────────────────────────────────────────────────────── */
+
+static int s_trace    = -1;  /* -1 = not yet checked, 0 = off, 1 = on */
+static int s_call_num =  0;  /* per-phase call counter */
+
+static int trace_enabled(void)
+{
+    if (s_trace < 0) s_trace = (getenv("METEOR_TRACE") != NULL);
+    return s_trace;
+}
+
+void llm_client_trace_phase(const char* phase)
+{
+    s_call_num = 0;
+    if (trace_enabled())
+        fprintf(stderr, "\n=== %s ===\n", phase);
+}
+
 /* ── public API ─────────────────────────────────────────────────────────── */
 
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
@@ -424,18 +571,37 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
                                            const char* partial_word,
                                            int         is_new_word)
 {
+    s_call_num++;
+
     char* prompt = is_new_word
-        ? build_new_word_prompt(full_context, client->max_candidates)
-        : build_continuation_prompt(full_context, partial_word, client->max_candidates);
+        ? build_new_word_prompt(full_context, client->max_candidates, client->chat_template)
+        : build_continuation_prompt(full_context, partial_word, client->max_candidates,
+                                    client->chat_template);
     if (!prompt) return NULL;
 
+    if (trace_enabled()) {
+        /* Print call header: context tail (last 40 chars) + partial */
+        size_t ctx_len = full_context ? strlen(full_context) : 0;
+        const char* ctx_tail = full_context
+            ? (ctx_len > 40 ? full_context + ctx_len - 40 : full_context)
+            : "";
+        fprintf(stderr, "[%04d] is_new=%d ctx='...%s' partial='%s' => ",
+                s_call_num, is_new_word, ctx_tail,
+                partial_word ? partial_word : "");
+        fflush(stderr);
+    }
+
     cJSON* req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     is_new_word ? NEW_WORD_GRAMMAR : CONTINUATION_GRAMMAR);
-    cJSON_AddNumberToObject(req, "n_predict",   128);
-    cJSON_AddNumberToObject(req, "temperature", 0.0);
-    cJSON_AddNumberToObject(req, "seed",        42);
-    cJSON_AddBoolToObject  (req, "stream",      0);
+    cJSON_AddStringToObject(req, "prompt",        prompt);
+    cJSON_AddStringToObject(req, "grammar",       is_new_word ? NEW_WORD_GRAMMAR : CONTINUATION_GRAMMAR);
+    cJSON_AddNumberToObject(req, "n_predict",     128);
+    cJSON_AddNumberToObject(req, "temperature",   0.0);
+    cJSON_AddNumberToObject(req, "seed",          42);
+    cJSON_AddBoolToObject  (req, "stream",        0);
+    /* Disable cross-request KV-cache reuse: different n_past values for the
+     * same prompt produce different float-accumulation order in the prefill
+     * batch, breaking the encoder/decoder distribution invariant. */
+    cJSON_AddBoolToObject  (req, "cache_prompt",  0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -444,14 +610,29 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     char* raw = HTTP_POST(client, "/completion", body);
     free(body);
 
-    if (!raw) return uniform_fallback(client->max_candidates);
+    if (!raw) {
+        if (trace_enabled()) fprintf(stderr, "FALLBACK(no-response)\n");
+        return uniform_fallback(client->max_candidates);
+    }
 
     LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
     free(raw);
 
     if (!resp || resp->count == 0) {
+        if (trace_enabled()) fprintf(stderr, "FALLBACK(bad-json)\n");
         llm_response_free(resp);
         return uniform_fallback(client->max_candidates);
+    }
+
+    if (trace_enabled()) {
+        for (int i = 0; i < resp->count; i++) {
+            const char* txt = resp->candidates[i].text;
+            fprintf(stderr, "%s:%.3f ",
+                    txt[0] == '\x01' ? "~" : txt,
+                    resp->candidates[i].prob);
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
     }
     return resp;
 }
@@ -461,6 +642,21 @@ void llm_response_free(LLMResponse* resp)
     if (!resp) return;
     free(resp->candidates);
     free(resp);
+}
+
+int llm_client_erase_slot(LLMClient* client, int id_slot)
+{
+    if (!client) return 0;
+    char path[32];
+    snprintf(path, sizeof(path), "/slots/%d", id_slot);
+    char* raw = HTTP_POST(client, path, "{\"action\":\"erase\"}");
+    if (!raw) return 0;
+    /* A successful erase response contains "id_slot" or "erase" in the body.
+     * Any error response from llama-server contains "error". */
+    int ok = (strstr(raw, "id_slot") != NULL || strstr(raw, "erase") != NULL)
+          && strstr(raw, "\"error\"") == NULL;
+    free(raw);
+    return ok;
 }
 
 int llm_client_health(LLMClient* client)
