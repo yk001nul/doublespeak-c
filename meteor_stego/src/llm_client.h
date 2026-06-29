@@ -46,6 +46,13 @@ void llm_response_free(LLMResponse* resp);
 int llm_client_health(LLMClient* client);
 
 /*
+ * Erase the KV cache for the given slot (POST /slots/{id_slot} {"action":"erase"}).
+ * Returns 1 on success, 0 if the endpoint is unavailable or the request fails.
+ * Call between encode and decode phases to clear accumulated server state.
+ */
+int llm_client_erase_slot(LLMClient* client, int id_slot);
+
+/*
  * Trace support — call once at the start of each encode/decode phase.
  * If the METEOR_TRACE env-var is set, prints a "=== phase ===" header and
  * resets the per-session call counter so encoder and decoder calls align.

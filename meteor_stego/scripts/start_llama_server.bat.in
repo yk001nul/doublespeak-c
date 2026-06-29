@@ -37,15 +37,16 @@ echo   seed:    %SEED%
 echo   threads: %THREADS%
 
 start /B "" "%LLAMA_SERVER%"  ^
-    --model   "%MODEL_PATH%"   ^
-    --port    %PORT%           ^
-    --host    127.0.0.1        ^
-    --threads %THREADS%        ^
-    --seed    %SEED%           ^
-    --temp    0.0              ^
-    --ctx-size 2048            ^
-    --no-mmap                  ^
-    --log-disable              ^
+    --model            "%MODEL_PATH%"   ^
+    --port             %PORT%           ^
+    --host             127.0.0.1        ^
+    --threads          %THREADS%        ^
+    --seed             %SEED%           ^
+    --temp             0.0              ^
+    --ctx-size         2048             ^
+    --no-mmap                           ^
+    --no-cont-batching                  ^
+    --log-disable                       ^
     >> "%LOGFILE%" 2>&1
 
 echo llama-server launched. Check %LOGFILE% if issues arise.

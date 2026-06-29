@@ -644,6 +644,21 @@ void llm_response_free(LLMResponse* resp)
     free(resp);
 }
 
+int llm_client_erase_slot(LLMClient* client, int id_slot)
+{
+    if (!client) return 0;
+    char path[32];
+    snprintf(path, sizeof(path), "/slots/%d", id_slot);
+    char* raw = HTTP_POST(client, path, "{\"action\":\"erase\"}");
+    if (!raw) return 0;
+    /* A successful erase response contains "id_slot" or "erase" in the body.
+     * Any error response from llama-server contains "error". */
+    int ok = (strstr(raw, "id_slot") != NULL || strstr(raw, "erase") != NULL)
+          && strstr(raw, "\"error\"") == NULL;
+    free(raw);
+    return ok;
+}
+
 int llm_client_health(LLMClient* client)
 {
     if (!client) return 0;

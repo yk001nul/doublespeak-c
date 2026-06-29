@@ -122,7 +122,7 @@ meteor_stego\out\build\x64-debug\start_llama_server.bat  path\to\model.gguf
 cmake --build meteor_stego/out/build/x64-debug --target server_health
 ```
 
-Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap`. See `ARCHITECTURE.md §6` for the full determinism checklist.
+Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap --no-cont-batching`. See `ARCHITECTURE.md §6` for the full determinism checklist.
 
 ## Architecture
 
@@ -167,9 +167,15 @@ Public API is in `include/meteor.h`. FFI bindings (Python ctypes, C# P/Invoke) l
 
 This is the most critical operational requirement. A single-bit difference in LLM probability distributions between encoder and decoder corrupts the entire recovered message. Both sides must use:
 - The **same GGUF model file** (verify SHA-256 with `scripts/verify_model.sh`)
-- `--threads 1` (eliminates float reduction-order non-determinism)
+- `--threads 1` — eliminates float reduction-order non-determinism in multi-threaded prefill
+- `--no-cont-batching` — **required for larger models (≥3B)**; continuous batching accumulates batch-scheduler state across requests that causes logit drift after ~17 calls despite `cache_prompt: false`; confirmed fix for Phi-3.5-mini (3.8B) producing different distributions on decode vs encode
 - CPU-only inference (`--gpu-layers 0`); GPU float rounding differs across vendors
 - A pinned llama.cpp git tag (`LLAMA_CPP_GIT_TAG` in CMake)
+
+The LLM client (`src/llm_client.c`) enforces three additional invariants on every `/completion` request:
+- `"cache_prompt": false` — prevents cross-request KV-cache reuse; different `n_past` positions produce different float accumulation order in the prefill batch
+- EOW injection — continuation steps always include an end-of-word candidate (prob `1/max_candidates`) so words can terminate; both sides apply this identically
+- Duplicate-key dedup — candidates with the same syllable text have their probabilities summed rather than occupying two separate slots
 
 ## Security design
 

@@ -60,16 +60,17 @@ echo "  seed:    $SEED"
 echo "  threads: $THREADS$([ "$THREADS" -eq 1 ] && echo '  (cross-machine safe)' || echo '  (single-machine only — cross-machine determinism requires matching thread count)')"
 echo "  log:     $LOGFILE"
 
-"$LLAMA_SERVER"            \
-    --model   "$MODEL_PATH"   \
-    --port    "$PORT"          \
-    --host    127.0.0.1        \
-    --threads "$THREADS"       \
-    --seed    "$SEED"          \
-    --temp    0.0              \
-    --ctx-size 2048            \
-    --no-mmap                  \
-    --log-disable              \
+"$LLAMA_SERVER"                \
+    --model            "$MODEL_PATH"   \
+    --port             "$PORT"          \
+    --host             127.0.0.1        \
+    --threads          "$THREADS"       \
+    --seed             "$SEED"          \
+    --temp             0.0              \
+    --ctx-size         2048             \
+    --no-mmap                           \
+    --no-cont-batching                  \
+    --log-disable                       \
     >> "$LOGFILE" 2>&1 &
 
 echo $! > "$PIDFILE"
