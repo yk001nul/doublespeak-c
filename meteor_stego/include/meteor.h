@@ -114,6 +114,43 @@ int meteor_llm_health(MeteorCtx* ctx);
 /* Free any pointer returned by this library. */
 void meteor_free(void* ptr);
 
+/* ── Capacity estimation ──────────────────────────────────────────────────── */
+
+/*
+ * Result of meteor_estimate_capacity().
+ * All fields are 0 on error.
+ */
+typedef struct {
+    int   estimated_bits;       /* total bits that can be embedded */
+    int   estimated_bytes;      /* estimated_bits / 8 */
+    int   estimated_words;      /* expected paraphrase length in words */
+    float avg_bits_per_word;    /* average bits encoded per word step */
+    int   sample_steps_used;    /* 0 = heuristic; >0 = LLM samples taken */
+} MeteorCapacityEstimate;
+
+/*
+ * Estimate how many bits can be embedded when using `context` as the
+ * paraphrase source in style mode.
+ *
+ * sample_steps = 0 : fast heuristic — no LLM calls, returns in microseconds.
+ *                    Uses a conservative 65 % of the theoretical maximum.
+ * sample_steps > 0 : accurate — makes this many LLM calls to measure the
+ *                    actual average bits-per-step for the given context and
+ *                    style.  Requires the LLM server to be running.
+ *
+ * Returns METEOR_OK on success, or METEOR_ERR_CONFIG if ctx / context / out
+ * are NULL or context is empty.
+ *
+ * Typical use — check before encoding:
+ *   MeteorCapacityEstimate est;
+ *   meteor_estimate_capacity(ctx, topic, 0, &est);
+ *   if (est.estimated_bytes < msg_len) { ... too long ... }
+ */
+int meteor_estimate_capacity(MeteorCtx*              ctx,
+                             const char*             context,
+                             int                     sample_steps,
+                             MeteorCapacityEstimate* out);
+
 /* ── Error codes ─────────────────────────────────────────────────────────── */
 
 #define METEOR_OK              0

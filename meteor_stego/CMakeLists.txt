@@ -133,6 +133,7 @@ add_library(meteor SHARED
     src/llm_client.c
     src/encode.c
     src/decode.c
+    src/capacity.c
 )
 
 target_include_directories(meteor
@@ -237,7 +238,7 @@ add_custom_target(server_health
 
 enable_testing()
 
-set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode)
+set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode capacity)
 
 # Internal source files needed by tests
 set(INTERNAL_SOURCES
@@ -248,17 +249,18 @@ set(INTERNAL_SOURCES
     src/llm_client.c
     src/encode.c
     src/decode.c
+    src/capacity.c
 )
 
 foreach(test ${ALL_TESTS})
-    if(test MATCHES "roundtrip|determinism|styled_encode")
+    if(test MATCHES "roundtrip|determinism|styled_encode|capacity")
         # These tests use the public meteor API, don't compile internal sources
         add_executable(test_${test} tests/test_${test}.c)
     else()
         # Other tests need internal sources for unit testing
         add_executable(test_${test} tests/test_${test}.c ${INTERNAL_SOURCES})
     endif()
-    
+
     target_include_directories(test_${test} PRIVATE
         include
         ${cjson_SOURCE_DIR}
@@ -273,16 +275,16 @@ foreach(test ${ALL_TESTS})
     if(NOT WIN32)
         target_link_libraries(test_${test} PRIVATE m)
     endif()
-    
-    # Link roundtrip and determinism tests against the meteor library
-    if(test MATCHES "roundtrip|determinism|styled_encode")
+
+    # Link roundtrip, determinism, styled_encode and capacity tests against the meteor library
+    if(test MATCHES "roundtrip|determinism|styled_encode|capacity")
         add_dependencies(test_${test} meteor)
         target_link_libraries(test_${test} PRIVATE meteor)
     endif()
-    
+
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
 
-set_tests_properties(roundtrip determinism styled_encode PROPERTIES
+set_tests_properties(roundtrip determinism styled_encode capacity PROPERTIES
     SKIP_REGULAR_EXPRESSION "llama-server not reachable"
 )

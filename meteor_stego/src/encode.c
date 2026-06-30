@@ -79,6 +79,14 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
     int    steps      = 0;
 
     if (ctx->style != METEOR_STYLE_NONE) {
+        /* Hard reject: even at theoretical maximum (beta bits/step × max_steps)
+           the step budget cannot hold the message. */
+        if ((size_t)(ctx->max_steps * ctx->beta) < total_bits) {
+            free(preamble); free(msg_bits); free(full_text); prng_wipe(&prng);
+            *out_error = METEOR_ERR_CAPACITY;
+            return NULL;
+        }
+
         /* ── Word-level encode loop (embellishment mode) ────────────────── */
         char last_word[64] = {0}; /* blacklist: word chosen in the previous step */
         while (bit_offset < total_bits && steps < ctx->max_steps) {
