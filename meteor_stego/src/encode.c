@@ -80,9 +80,11 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
 
     if (ctx->style != METEOR_STYLE_NONE) {
         /* ── Word-level encode loop (embellishment mode) ────────────────── */
+        char last_word[64] = {0}; /* blacklist: word chosen in the previous step */
         while (bit_offset < total_bits && steps < ctx->max_steps) {
             LLMResponse* resp = llm_client_get_word_dist(
-                ctx->llm, preamble, full_text);
+                ctx->llm, preamble, full_text,
+                last_word[0] ? last_word : NULL);
             if (!resp) { *out_error = METEOR_ERR_LLM; break; }
 
             const char** w_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
@@ -105,6 +107,9 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
 
             bit_offset += (size_t)step.cp_len;
             steps++;
+
+            strncpy(last_word, step.chosen, 63);
+            last_word[63] = '\0';
 
             /* append chosen word to covertext */
             size_t wlen   = strlen(step.chosen);

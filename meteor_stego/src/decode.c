@@ -163,11 +163,12 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
     if (ctx->style != METEOR_STYLE_NONE) {
         /* ── Word-level decode loop (embellishment mode) ──────────────── */
+        const char* last_word = NULL; /* blacklist for the next LLM call */
         for (int wi = 0; wi < word_count && !done; wi++) {
             const char* word = words[wi];
 
             LLMResponse* resp = llm_client_get_word_dist(
-                ctx->llm, preamble, full_recon);
+                ctx->llm, preamble, full_recon, last_word);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
             const char** w_texts = (const char**)malloc(
@@ -194,6 +195,8 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
                 recovered_bits[rb_count++] = step_bits[b];
 
             if (null_terminator_found(recovered_bits, rb_count)) { done = 1; break; }
+
+            last_word = word; /* blacklist this word on the next LLM call */
 
             /* advance full_recon */
             size_t wlen   = strlen(word);

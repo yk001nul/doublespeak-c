@@ -65,9 +65,15 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
  * full_context: generated text so far.
  * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
  */
+/*
+ * blacklist_word: word chosen in the previous step; the LLM is asked not to
+ * suggest it again, breaking single-word fixation at temp=0.  Pass NULL on
+ * the first step.
+ */
 LLMResponse* llm_client_get_word_dist(LLMClient*  client,
                                        const char* preamble,
-                                       const char* full_context);
+                                       const char* full_context,
+                                       const char* blacklist_word);
 
 void llm_response_free(LLMResponse* resp);
 

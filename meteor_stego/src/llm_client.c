@@ -479,33 +479,41 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     return resp;
 }
 
-static char* build_word_prompt(const char* preamble, const char* ctx, int n)
+static char* build_word_prompt(const char* preamble, const char* ctx, int n,
+                               const char* blacklist)
 {
-    size_t pre_len  = preamble ? strlen(preamble) : 0;
-    size_t ctx_len  = ctx && ctx[0] ? strlen(ctx) : 0;
-    size_t buf_size = pre_len + ctx_len + 512;
-    char*  buf      = (char*)malloc(buf_size);
+    size_t pre_len    = preamble   ? strlen(preamble)   : 0;
+    size_t ctx_len    = ctx && ctx[0] ? strlen(ctx)     : 0;
+    size_t bl_len     = blacklist && blacklist[0] ? strlen(blacklist) : 0;
+    size_t buf_size   = pre_len + ctx_len + bl_len + 640;
+    char*  buf        = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
     const char* instruction = ctx_len > 0
-        ? "Continue the sentence below naturally. Choose words that flow grammatically — do NOT repeat words from the background idea verbatim."
-        : "Begin a natural sentence expressing the background idea. Do NOT start with words copied from the background.";
+        ? "Continue the sentence below naturally. Use meaningful nouns, verbs, and adjectives — do NOT use generic filler adverbs or repeat words from the background."
+        : "Begin a natural sentence expressing the background idea. Use a meaningful content word — do NOT copy words from the background.";
+
+    /* blacklist clause — empty string when no prior word */
+    char bl_clause[96] = {0};
+    if (bl_len > 0)
+        snprintf(bl_clause, sizeof(bl_clause),
+                 "\nDo NOT suggest \"%s\" (just used — vary the vocabulary).", blacklist);
 
     if (preamble) {
         snprintf(buf, buf_size,
             "%s"
-            "%s\n"
+            "%s%s\n"
             "Sentence so far: \"%s\"\n"
-            "Provide the %d most grammatically natural next words.\n"
-            "Return ONLY a JSON object like: {\"really\": 0.4, \"always\": 0.3, \"absolutely\": 0.2, \"truly\": 0.1} — probs sum to 1.0.",
-            preamble, instruction, ctx ? ctx : "", n);
+            "Provide the %d most natural next words (nouns, verbs, adjectives preferred).\n"
+            "Return ONLY a JSON object like: {\"enjoying\": 0.4, \"craving\": 0.3, \"fantastic\": 0.2, \"wonderful\": 0.1} — probs sum to 1.0.",
+            preamble, instruction, bl_clause, ctx ? ctx : "", n);
     } else {
         snprintf(buf, buf_size,
             "Write a natural sentence. Sentence so far: \"%s\"\n"
-            "%s\n"
+            "%s%s\n"
             "Provide the %d most probable next words.\n"
             "Return ONLY a JSON object — probs sum to 1.0.",
-            ctx ? ctx : "", instruction, n);
+            ctx ? ctx : "", instruction, bl_clause, n);
     }
     return buf;
 }
@@ -594,9 +602,11 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
 
 LLMResponse* llm_client_get_word_dist(LLMClient*  client,
                                        const char* preamble,
-                                       const char* full_context)
+                                       const char* full_context,
+                                       const char* blacklist_word)
 {
-    char* prompt = build_word_prompt(preamble, full_context, client->max_candidates);
+    char* prompt = build_word_prompt(preamble, full_context, client->max_candidates,
+                                     blacklist_word);
     if (!prompt) return NULL;
 
     cJSON* req = cJSON_CreateObject();
