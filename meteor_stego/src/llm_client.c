@@ -317,30 +317,82 @@ static const char* CONTINUATION_GRAMMAR =
     "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws       ::= [ \\t\\n]*\n";
 
-static char* build_new_word_prompt(const char* ctx, int n)
+static const char* style_to_str(int style)
 {
-    char* buf = (char*)malloc(4096);
+    switch (style) {
+        case 1: return "informal mobile chat (e.g. WhatsApp or SMS)";
+        case 2: return "formal business email";
+        case 3: return "casual first-person blog post";
+        case 4: return "neutral third-person news article";
+        default: return NULL;
+    }
+}
+
+char* llm_client_build_preamble(int style, const char* topic)
+{
+    const char* sname = style_to_str(style);
+    if (!sname || !topic || !*topic) return NULL;
+    size_t n = strlen(topic) + strlen(sname) + 32;
+    char* buf = (char*)malloc(n);
     if (!buf) return NULL;
-    snprintf(buf, 4096,
-        "Text so far: \"%s\"\n"
-        "You are generating the next word one syllable at a time.\n"
-        "Provide the %d most natural first syllables for the next word.\n"
-        "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
-        ctx, n);
+    snprintf(buf, n, "Topic: \"%s\"\nStyle: %s\n---\n", topic, sname);
     return buf;
 }
 
-static char* build_continuation_prompt(const char* ctx, const char* partial, int n)
+static char* build_new_word_prompt(const char* preamble, const char* ctx, int n)
 {
-    char* buf = (char*)malloc(4096);
+    size_t pre_len = preamble ? strlen(preamble) : 0;
+    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
+    size_t buf_size = pre_len + ctx_len + 256;
+    char* buf = (char*)malloc(buf_size);
     if (!buf) return NULL;
-    snprintf(buf, 4096,
-        "Text so far: \"%s\"\n"
-        "Word being built: \"%s\"\n"
-        "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
-        "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
-        "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
-        ctx, partial, n - 1, partial);
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Text so far: \"%s\"\n"
+            "You are continuing this text in the given style about the given topic.\n"
+            "Provide the %d most natural first syllables for the next word.\n"
+            "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
+            preamble, ctx, n);
+    } else {
+        snprintf(buf, buf_size,
+            "Text so far: \"%s\"\n"
+            "You are generating the next word one syllable at a time.\n"
+            "Provide the %d most natural first syllables for the next word.\n"
+            "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
+            ctx, n);
+    }
+    return buf;
+}
+
+static char* build_continuation_prompt(const char* preamble, const char* ctx,
+                                        const char* partial, int n)
+{
+    size_t pre_len = preamble ? strlen(preamble) : 0;
+    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
+    size_t par_len = partial ? strlen(partial) : 0;
+    size_t buf_size = pre_len + ctx_len + par_len * 2 + 256;
+    char* buf = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Text so far: \"%s\"\n"
+            "Word being built: \"%s\"\n"
+            "You are continuing this text in the given style about the given topic.\n"
+            "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
+            "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
+            "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
+            preamble, ctx, partial, n - 1, partial);
+    } else {
+        snprintf(buf, buf_size,
+            "Text so far: \"%s\"\n"
+            "Word being built: \"%s\"\n"
+            "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
+            "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
+            "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
+            ctx, partial, n - 1, partial);
+    }
     return buf;
 }
 
@@ -420,13 +472,14 @@ static LLMResponse* uniform_fallback(int n)
 /* ── public API ─────────────────────────────────────────────────────────── */
 
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
+                                           const char* preamble,
                                            const char* full_context,
                                            const char* partial_word,
                                            int         is_new_word)
 {
     char* prompt = is_new_word
-        ? build_new_word_prompt(full_context, client->max_candidates)
-        : build_continuation_prompt(full_context, partial_word, client->max_candidates);
+        ? build_new_word_prompt(preamble, full_context, client->max_candidates)
+        : build_continuation_prompt(preamble, full_context, partial_word, client->max_candidates);
     if (!prompt) return NULL;
 
     cJSON* req = cJSON_CreateObject();

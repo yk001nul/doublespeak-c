@@ -34,11 +34,16 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         return NULL;
     }
 
-    /* allocate output buffer */
-    size_t ctx_len  = starting_context ? strlen(starting_context) : 0;
+    /* build style preamble (NULL in legacy mode) */
+    char* preamble = llm_client_build_preamble((int)ctx->style, starting_context);
+
+    /* allocate output buffer; in style mode the covertext starts empty */
+    size_t ctx_len = (ctx->style == METEOR_STYLE_NONE && starting_context)
+                     ? strlen(starting_context) : 0;
     size_t buf_cap  = ctx_len + (size_t)ctx->max_steps * 32 + 64;
     char*  full_text = (char*)malloc(buf_cap);
     if (!full_text) {
+        free(preamble);
         free(msg_bits);
         prng_wipe(&prng);
         *out_error = METEOR_ERR_OOM;
@@ -57,7 +62,7 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         int is_new_word = (partial_word[0] == '\0');
 
         LLMResponse* resp = llm_client_get_syllable_dist(
-            ctx->llm, full_text, partial_word, is_new_word);
+            ctx->llm, preamble, full_text, partial_word, is_new_word);
         if (!resp) {
             *out_error = METEOR_ERR_LLM;
             break;
@@ -112,6 +117,7 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         }
     }
 
+    free(preamble);
     free(msg_bits);
     prng_wipe(&prng);
 

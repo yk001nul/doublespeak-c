@@ -32,8 +32,8 @@ static void test_dist_determinism(const char* context, const char* partial, int 
     LLMClient* c = llm_client_create("http://127.0.0.1:8080", 6, 30000);
     if (!c) { printf("[SKIP] client creation failed\n"); return; }
 
-    LLMResponse* r1 = llm_client_get_syllable_dist(c, context, partial, is_new);
-    LLMResponse* r2 = llm_client_get_syllable_dist(c, context, partial, is_new);
+    LLMResponse* r1 = llm_client_get_syllable_dist(c, NULL, context, partial, is_new);
+    LLMResponse* r2 = llm_client_get_syllable_dist(c, NULL, context, partial, is_new);
 
     CHECK(r1 != NULL && r2 != NULL, "Determinism: both responses non-NULL");
 

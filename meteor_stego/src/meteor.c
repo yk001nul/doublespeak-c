@@ -58,6 +58,8 @@ MeteorCtx* meteor_create(const MeteorConfig* config)
         strncpy(ctx->hyphen_dict_path, config->hyphen_dict,
                 sizeof(ctx->hyphen_dict_path) - 1);
 
+    ctx->style = config->style;
+
     ctx->llm = llm_client_create(ctx->llm_url, ctx->num_candidates, ctx->llm_timeout_ms);
     if (!ctx->llm) { free(ctx); return NULL; }
 

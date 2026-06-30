@@ -101,13 +101,19 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     *out_error   = METEOR_OK;
     *out_msg_len = 0;
 
-    int    skip_words = count_words(starting_context);
+    /* build style preamble (NULL in legacy mode) */
+    char* preamble = llm_client_build_preamble((int)ctx->style, starting_context);
+
+    /* in style mode all covertext words are encoded; in legacy mode skip the
+     * starting_context words that appear verbatim at the front */
+    int    skip_words = (ctx->style == METEOR_STYLE_NONE) ? count_words(starting_context) : 0;
     int    word_count = 0;
     char** words      = extract_words(covertext, skip_words, &word_count);
 
     MeteorPRNG prng;
     int rc = prng_init_raw(&prng, ctx->key);
     if (rc != 0) {
+        free(preamble);
         free_words(words, word_count);
         *out_error = METEOR_ERR_CRYPTO;
         return NULL;
@@ -120,19 +126,21 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     char*  full_recon = (char*)malloc(recon_cap);
     if (!full_recon || !recovered_bits) {
         free(recovered_bits); free(full_recon);
+        free(preamble);
         free_words(words, word_count);
         prng_wipe(&prng);
         *out_error = METEOR_ERR_OOM;
         return NULL;
     }
     size_t recon_len = 0;
-    if (starting_context) {
+    if (ctx->style == METEOR_STYLE_NONE && starting_context) {
         recon_len = strlen(starting_context);
         if (recon_len + 1 > recon_cap) {
             recon_cap  = recon_len + 4096;
             full_recon = (char*)realloc(full_recon, recon_cap);
             if (!full_recon) {
-                free(recovered_bits); free_words(words, word_count); prng_wipe(&prng);
+                free(recovered_bits); free(preamble);
+                free_words(words, word_count); prng_wipe(&prng);
                 *out_error = METEOR_ERR_OOM; return NULL;
             }
         }
@@ -152,7 +160,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         while (*remaining && !done) {
 
             LLMResponse* resp = llm_client_get_syllable_dist(
-                ctx->llm, full_recon, partial, is_new);
+                ctx->llm, preamble, full_recon, partial, is_new);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
             const char** syl_texts = (const char**)malloc(
@@ -232,7 +240,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
         /* ── Synthesise the EOW step that always ends each encoded word ── */
         LLMResponse* eow_resp = llm_client_get_syllable_dist(
-            ctx->llm, full_recon, partial, 0);
+            ctx->llm, preamble, full_recon, partial, 0);
         if (eow_resp) {
             const char** et = (const char**)malloc(
                 (size_t)eow_resp->count * sizeof(char*));
@@ -276,6 +284,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     free_words(words, word_count);
     prng_wipe(&prng);
     free(full_recon);
+    free(preamble);
 
     size_t   msg_len;
     uint8_t* msg = bits_to_bytes(recovered_bits, rb_count, &msg_len);

@@ -23,9 +23,19 @@ LLMClient*   llm_client_create(const char* base_url, int max_candidates, int tim
 void         llm_client_destroy(LLMClient* client);
 
 /*
+ * Build an embellishment preamble string from a style id and topic text.
+ * style   : MeteorStyle cast to int; pass 0 (METEOR_STYLE_NONE) to get NULL.
+ * topic   : the starting_context string repurposed as topic source.
+ * Returns a heap-allocated string the caller must free(), or NULL if style==0
+ * or on OOM.  The returned string is prepended to every LLM prompt.
+ */
+char* llm_client_build_preamble(int style, const char* topic);
+
+/*
  * Get syllable distribution for one Meteor step.
- * full_context   : entire generated text so far (used as prompt)
- * partial_word   : syllables built for the current word so far (empty string if is_new_word)
+ * preamble       : style/topic prefix from llm_client_build_preamble(), or NULL
+ * full_context   : generated text so far (not including preamble)
+ * partial_word   : syllables built for the current word so far (empty if is_new_word)
  * is_new_word    : 1 = first syllable of a new word, 0 = continuation / EOW step
  *
  * Returns NULL on unrecoverable failure (caller treats it as METEOR_ERR_LLM).
@@ -33,6 +43,7 @@ void         llm_client_destroy(LLMClient* client);
  * Caller frees with llm_response_free().
  */
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
+                                           const char* preamble,
                                            const char* full_context,
                                            const char* partial_word,
                                            int         is_new_word);

@@ -237,7 +237,7 @@ add_custom_target(server_health
 
 enable_testing()
 
-set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism)
+set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode)
 
 # Internal source files needed by tests
 set(INTERNAL_SOURCES
@@ -251,7 +251,7 @@ set(INTERNAL_SOURCES
 )
 
 foreach(test ${ALL_TESTS})
-    if(test MATCHES "roundtrip|determinism")
+    if(test MATCHES "roundtrip|determinism|styled_encode")
         # These tests use the public meteor API, don't compile internal sources
         add_executable(test_${test} tests/test_${test}.c)
     else()
@@ -275,7 +275,7 @@ foreach(test ${ALL_TESTS})
     endif()
     
     # Link roundtrip and determinism tests against the meteor library
-    if(test MATCHES "roundtrip|determinism")
+    if(test MATCHES "roundtrip|determinism|styled_encode")
         add_dependencies(test_${test} meteor)
         target_link_libraries(test_${test} PRIVATE meteor)
     endif()
@@ -283,6 +283,6 @@ foreach(test ${ALL_TESTS})
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
 
-set_tests_properties(roundtrip determinism PROPERTIES
+set_tests_properties(roundtrip determinism styled_encode PROPERTIES
     SKIP_REGULAR_EXPRESSION "llama-server not reachable"
 )

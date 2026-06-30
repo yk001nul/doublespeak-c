@@ -21,6 +21,8 @@ struct MeteorCtx {
     char     llm_url[256];
     char     hyphen_dict_path[512];
 
+    MeteorStyle style;
+
     LLMClient* llm;
     SylCtx*    syl;
 };
