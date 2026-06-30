@@ -612,7 +612,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
     cJSON_AddStringToObject(req, "grammar",     NEW_WORD_GRAMMAR);
-    cJSON_AddNumberToObject(req, "n_predict",   64);
+    cJSON_AddNumberToObject(req, "n_predict",   96);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
