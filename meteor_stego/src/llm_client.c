@@ -137,8 +137,13 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
         return NULL;
     }
 
-    DWORD timeout = (DWORD)impl->timeout_ms;
-    WinHttpSetTimeouts(hRequest, timeout, timeout, timeout, timeout);
+    DWORD conn_timeout = (DWORD)impl->timeout_ms;
+    /* llama-server holds the connection open until generation completes, so the
+       body-receive timeout must cover the full generation time (can exceed 60 s
+       at --threads 1).  Keep connect/send short to detect downed servers fast.
+       WinHttpQueryDataAvailable ignores WINHTTP_OPTION_RECEIVE_TIMEOUT per MSDN;
+       use WinHttpReadData directly so the 300 s deadline is actually enforced. */
+    WinHttpSetTimeouts(hRequest, conn_timeout, conn_timeout, conn_timeout, 300000);
 
     BOOL sent = WinHttpSendRequest(hRequest,
                                    L"Content-Type: application/json\r\n",
@@ -152,16 +157,14 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
         return NULL;
     }
 
-    GrowBuf gb = {0};
-    DWORD   bytes_avail;
-    while (WinHttpQueryDataAvailable(hRequest, &bytes_avail) && bytes_avail > 0) {
-        char* chunk = (char*)malloc(bytes_avail + 1);
-        if (!chunk) break;
-        DWORD bytes_read = 0;
-        WinHttpReadData(hRequest, chunk, bytes_avail, &bytes_read);
-        growbuf_append(&gb, chunk, bytes_read);
-        free(chunk);
-    }
+    GrowBuf gb     = {0};
+    char    chunk[4096];
+    DWORD   bytes_read;
+    do {
+        bytes_read = 0;
+        if (!WinHttpReadData(hRequest, chunk, sizeof(chunk), &bytes_read)) break;
+        if (bytes_read > 0) growbuf_append(&gb, chunk, bytes_read);
+    } while (bytes_read > 0);
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
