@@ -428,12 +428,24 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     cJSON* item; int i = 0;
     cJSON_ArrayForEach(item, obj) {
         if (i >= n) break;
-        if (!cJSON_IsNumber(item)) { i++; continue; }
+        if (!cJSON_IsNumber(item)) continue;
         float p = (float)item->valuedouble;
         if (p < 0.0f) p = 0.0f;
-        strncpy(resp->candidates[i].text, item->string, 63);
+
+        char text[64];
+        strncpy(text, item->string, 63);
+        text[63] = '\0';
+        map_eow(text);
+
+        /* skip duplicate keys — JSON with repeated keys causes encode/decode divergence */
+        int dup = 0;
+        for (int j = 0; j < i; j++) {
+            if (strcmp(resp->candidates[j].text, text) == 0) { dup = 1; break; }
+        }
+        if (dup) continue;
+
+        strncpy(resp->candidates[i].text, text, 63);
         resp->candidates[i].text[63] = '\0';
-        map_eow(resp->candidates[i].text);
         resp->candidates[i].prob = p;
         sum += p;
         i++;
@@ -448,11 +460,57 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     return resp;
 }
 
+static char* build_word_prompt(const char* preamble, const char* ctx, int n)
+{
+    size_t pre_len = preamble ? strlen(preamble) : 0;
+    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
+    size_t buf_size = pre_len + ctx_len + 256;
+    char* buf = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Text so far: \"%s\"\n"
+            "You are writing text in the given style about the given topic.\n"
+            "Provide the %d most natural next complete words for this text.\n"
+            "Return ONLY a JSON object like: {\"love\": 0.4, \"enjoy\": 0.3, \"like\": 0.2, \"want\": 0.1} — probs sum to 1.0.",
+            preamble, ctx, n);
+    } else {
+        snprintf(buf, buf_size,
+            "Text so far: \"%s\"\n"
+            "Provide the %d most natural next complete words.\n"
+            "Return ONLY a JSON object like: {\"love\": 0.4, \"enjoy\": 0.3, \"like\": 0.2, \"want\": 0.1} — probs sum to 1.0.",
+            ctx, n);
+    }
+    return buf;
+}
+
 static const char* FALLBACK_SYLLABLES[] = {
     "the", "in", "a", "re", "pro", "con", "de", "ex", "un", "be",
     "per", "dis", "over", "out", "sub", "pre", "inter", "mis", "non", "bi"
 };
 #define FALLBACK_SYLLABLES_COUNT 20
+
+static const char* FALLBACK_WORDS[] = {
+    "the", "is", "a", "and", "of", "it", "to", "in", "that", "have",
+    "for", "on", "are", "with", "as", "at", "be", "this", "was", "but"
+};
+#define FALLBACK_WORDS_COUNT 20
+
+static LLMResponse* uniform_word_fallback(int n)
+{
+    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
+    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
+    resp->count       = n;
+    float p = 1.0f / (float)n;
+    for (int i = 0; i < n; i++) {
+        strncpy(resp->candidates[i].text,
+                FALLBACK_WORDS[i % FALLBACK_WORDS_COUNT], 63);
+        resp->candidates[i].text[63] = '\0';
+        resp->candidates[i].prob = p;
+    }
+    return resp;
+}
 
 static LLMResponse* uniform_fallback(int n)
 {
@@ -505,6 +563,40 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
         return uniform_fallback(client->max_candidates);
+    }
+    return resp;
+}
+
+LLMResponse* llm_client_get_word_dist(LLMClient*  client,
+                                       const char* preamble,
+                                       const char* full_context)
+{
+    char* prompt = build_word_prompt(preamble, full_context, client->max_candidates);
+    if (!prompt) return NULL;
+
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt",      prompt);
+    cJSON_AddStringToObject(req, "grammar",     NEW_WORD_GRAMMAR);
+    cJSON_AddNumberToObject(req, "n_predict",   64);
+    cJSON_AddNumberToObject(req, "temperature", 0.0);
+    cJSON_AddNumberToObject(req, "seed",        42);
+    cJSON_AddBoolToObject  (req, "stream",      0);
+    char* body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    free(prompt);
+    if (!body) return NULL;
+
+    char* raw = HTTP_POST(client, "/completion", body);
+    free(body);
+
+    if (!raw) return uniform_word_fallback(client->max_candidates);
+
+    LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
+    free(raw);
+
+    if (!resp || resp->count == 0) {
+        llm_response_free(resp);
+        return uniform_word_fallback(client->max_candidates);
     }
     return resp;
 }

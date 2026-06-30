@@ -53,53 +53,41 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         memcpy(full_text, starting_context, ctx_len);
     full_text[ctx_len] = '\0';
 
-    /* partial word accumulator */
-    char   partial_word[MAX_PARTIAL_LEN] = {0};
     size_t bit_offset = 0;
     int    steps      = 0;
 
-    while ((bit_offset < total_bits || partial_word[0] != '\0') && steps < ctx->max_steps) {
-        int is_new_word = (partial_word[0] == '\0');
+    if (ctx->style != METEOR_STYLE_NONE) {
+        /* ── Word-level encode loop (embellishment mode) ────────────────── */
+        while (bit_offset < total_bits && steps < ctx->max_steps) {
+            LLMResponse* resp = llm_client_get_word_dist(
+                ctx->llm, preamble, full_text);
+            if (!resp) { *out_error = METEOR_ERR_LLM; break; }
 
-        LLMResponse* resp = llm_client_get_syllable_dist(
-            ctx->llm, preamble, full_text, partial_word, is_new_word);
-        if (!resp) {
-            *out_error = METEOR_ERR_LLM;
-            break;
-        }
+            const char** w_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
+            float*       w_probs = (float*)malloc((size_t)resp->count * sizeof(float));
+            if (!w_texts || !w_probs) {
+                free(w_texts); free(w_probs); llm_response_free(resp);
+                *out_error = METEOR_ERR_OOM; break;
+            }
+            for (int i = 0; i < resp->count; i++) {
+                w_texts[i] = resp->candidates[i].text;
+                w_probs[i] = resp->candidates[i].prob;
+            }
+            MeteorDist* dist = meteor_build_dist(w_texts, w_probs, resp->count, ctx->beta);
+            free(w_texts); free(w_probs); llm_response_free(resp);
+            if (!dist) { *out_error = METEOR_ERR_OOM; break; }
 
-        /* build syllable arrays for meteor_build_dist */
-        const char** syl_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
-        float*       syl_probs = (float*)malloc((size_t)resp->count * sizeof(float));
-        if (!syl_texts || !syl_probs) {
-            free(syl_texts); free(syl_probs);
-            llm_response_free(resp);
-            *out_error = METEOR_ERR_OOM;
-            break;
-        }
-        for (int i = 0; i < resp->count; i++) {
-            syl_texts[i] = resp->candidates[i].text;
-            syl_probs[i] = resp->candidates[i].prob;
-        }
+            MeteorStepResult step = meteor_encode_step(
+                dist, msg_bits, bit_offset, total_bits, &prng, ctx->beta);
+            meteor_free_dist(dist);
 
-        MeteorDist* dist = meteor_build_dist(syl_texts, syl_probs, resp->count, ctx->beta);
-        free(syl_texts); free(syl_probs);
-        llm_response_free(resp);
+            bit_offset += (size_t)step.cp_len;
+            steps++;
 
-        if (!dist) { *out_error = METEOR_ERR_OOM; break; }
-
-        MeteorStepResult step = meteor_encode_step(
-            dist, msg_bits, bit_offset, total_bits, &prng, ctx->beta);
-        meteor_free_dist(dist);
-
-        bit_offset += (size_t)step.cp_len;
-        steps++;
-
-        if (strcmp(step.chosen, EOW_TOKEN) == 0) {
-            /* end-of-word: flush partial_word to full_text */
-            size_t pw_len = strlen(partial_word);
+            /* append chosen word to covertext */
+            size_t wlen   = strlen(step.chosen);
             size_t ft_len = strlen(full_text);
-            size_t needed = ft_len + 1 + pw_len + 2; /* space + word + \0 */
+            size_t needed = ft_len + 1 + wlen + 2;
             if (needed > buf_cap) {
                 buf_cap = needed * 2;
                 char* tmp = (char*)realloc(full_text, buf_cap);
@@ -107,13 +95,75 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
                 full_text = tmp;
             }
             if (ft_len > 0) full_text[ft_len++] = ' ';
-            memcpy(full_text + ft_len, partial_word, pw_len);
-            full_text[ft_len + pw_len] = '\0';
-            partial_word[0] = '\0';
-        } else {
-            /* accumulate syllable into partial word */
-            strncat(partial_word, step.chosen,
-                    MAX_PARTIAL_LEN - strlen(partial_word) - 1);
+            memcpy(full_text + ft_len, step.chosen, wlen);
+            full_text[ft_len + wlen] = '\0';
+        }
+    } else {
+        /* ── Syllable-level encode loop (legacy mode) ───────────────────── */
+        char partial_word[MAX_PARTIAL_LEN] = {0};
+
+        while ((bit_offset < total_bits || partial_word[0] != '\0') && steps < ctx->max_steps) {
+            int is_new_word = (partial_word[0] == '\0');
+
+            LLMResponse* resp = llm_client_get_syllable_dist(
+                ctx->llm, preamble, full_text, partial_word, is_new_word);
+            if (!resp) { *out_error = METEOR_ERR_LLM; break; }
+
+            const char** syl_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
+            float*       syl_probs = (float*)malloc((size_t)resp->count * sizeof(float));
+            if (!syl_texts || !syl_probs) {
+                free(syl_texts); free(syl_probs); llm_response_free(resp);
+                *out_error = METEOR_ERR_OOM; break;
+            }
+            for (int i = 0; i < resp->count; i++) {
+                syl_texts[i] = resp->candidates[i].text;
+                syl_probs[i] = resp->candidates[i].prob;
+            }
+            MeteorDist* dist = meteor_build_dist(syl_texts, syl_probs, resp->count, ctx->beta);
+            free(syl_texts); free(syl_probs); llm_response_free(resp);
+            if (!dist) { *out_error = METEOR_ERR_OOM; break; }
+
+            MeteorStepResult step = meteor_encode_step(
+                dist, msg_bits, bit_offset, total_bits, &prng, ctx->beta);
+            meteor_free_dist(dist);
+
+            bit_offset += (size_t)step.cp_len;
+            steps++;
+
+            if (strcmp(step.chosen, EOW_TOKEN) == 0) {
+                size_t pw_len = strlen(partial_word);
+                size_t ft_len = strlen(full_text);
+                size_t needed = ft_len + 1 + pw_len + 2;
+                if (needed > buf_cap) {
+                    buf_cap = needed * 2;
+                    char* tmp = (char*)realloc(full_text, buf_cap);
+                    if (!tmp) { *out_error = METEOR_ERR_OOM; free(full_text); full_text = NULL; break; }
+                    full_text = tmp;
+                }
+                if (ft_len > 0) full_text[ft_len++] = ' ';
+                memcpy(full_text + ft_len, partial_word, pw_len);
+                full_text[ft_len + pw_len] = '\0';
+                partial_word[0] = '\0';
+            } else {
+                strncat(partial_word, step.chosen, MAX_PARTIAL_LEN - strlen(partial_word) - 1);
+            }
+        }
+
+        /* finalise any dangling partial word */
+        if (partial_word[0] != '\0' && full_text) {
+            size_t pw_len = strlen(partial_word);
+            size_t ft_len = strlen(full_text);
+            size_t needed = ft_len + 1 + pw_len + 2;
+            if (needed > buf_cap) {
+                char* tmp = (char*)realloc(full_text, needed);
+                if (!tmp) { *out_error = METEOR_ERR_OOM; free(full_text); full_text = NULL; }
+                else full_text = tmp;
+            }
+            if (full_text) {
+                if (ft_len > 0) full_text[ft_len++] = ' ';
+                memcpy(full_text + ft_len, partial_word, pw_len);
+                full_text[ft_len + pw_len] = '\0';
+            }
         }
     }
 
@@ -122,26 +172,9 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
     prng_wipe(&prng);
 
     if (!full_text) return NULL;
-
-    /* finalise any dangling partial word (message ended mid-word) */
-    if (partial_word[0] != '\0') {
-        size_t pw_len = strlen(partial_word);
-        size_t ft_len = strlen(full_text);
-        size_t needed = ft_len + 1 + pw_len + 2;
-        if (needed > buf_cap) {
-            char* tmp = (char*)realloc(full_text, needed);
-            if (!tmp) { *out_error = METEOR_ERR_OOM; free(full_text); return NULL; }
-            full_text = tmp;
-        }
-        if (ft_len > 0) full_text[ft_len++] = ' ';
-        memcpy(full_text + ft_len, partial_word, pw_len);
-        full_text[ft_len + pw_len] = '\0';
-    }
-
     if (*out_error != METEOR_OK && *out_error != METEOR_ERR_LLM) {
         free(full_text);
         return NULL;
     }
-    /* METEOR_ERR_LLM is a soft failure — still return what we have */
     return full_text;
 }

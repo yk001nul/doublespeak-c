@@ -48,6 +48,17 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
                                            const char* partial_word,
                                            int         is_new_word);
 
+/*
+ * Get a distribution over whole words for the word-level Meteor step.
+ * Used in embellishment (style) mode instead of syllable-level sampling.
+ * preamble: style/topic prefix from llm_client_build_preamble(), or NULL.
+ * full_context: generated text so far.
+ * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ */
+LLMResponse* llm_client_get_word_dist(LLMClient*  client,
+                                       const char* preamble,
+                                       const char* full_context);
+
 void llm_response_free(LLMResponse* resp);
 
 /* Returns 1 if the server at base_url/health responds OK, 0 otherwise. */
