@@ -331,14 +331,30 @@ static const char* style_to_str(int style)
     }
 }
 
+const char* llm_client_style_seed(int style)
+{
+    switch (style) {
+        case 1: return "I like";        /* INFORMAL_CHAT — next words: burgers/this/eating/good/… */
+        case 2: return "I am";          /* FORMAL_EMAIL  — next words: writing/pleased/happy/… */
+        case 3: return "I love";        /* CASUAL_BLOG   — next words: burgers/eating/how/… */
+        case 4: return "Scientists say"; /* NEWS_ARTICLE — next words: that/the/global/temperatures/… */
+        default: return NULL;
+    }
+}
+
 char* llm_client_build_preamble(int style, const char* topic)
 {
     const char* sname = style_to_str(style);
     if (!sname || !topic || !*topic) return NULL;
-    size_t n = strlen(topic) + strlen(sname) + 32;
+    size_t n = strlen(topic) + strlen(sname) + 128;
     char* buf = (char*)malloc(n);
     if (!buf) return NULL;
-    snprintf(buf, n, "Topic: \"%s\"\nStyle: %s\n---\n", topic, sname);
+    snprintf(buf, n,
+        "Background idea: \"%s\"\n"
+        "Style: %s\n"
+        "Express this idea naturally — do NOT echo the background words literally.\n"
+        "---\n",
+        topic, sname);
     return buf;
 }
 
@@ -465,25 +481,31 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
 
 static char* build_word_prompt(const char* preamble, const char* ctx, int n)
 {
-    size_t pre_len = preamble ? strlen(preamble) : 0;
-    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
-    size_t buf_size = pre_len + ctx_len + 256;
-    char* buf = (char*)malloc(buf_size);
+    size_t pre_len  = preamble ? strlen(preamble) : 0;
+    size_t ctx_len  = ctx && ctx[0] ? strlen(ctx) : 0;
+    size_t buf_size = pre_len + ctx_len + 512;
+    char*  buf      = (char*)malloc(buf_size);
     if (!buf) return NULL;
+
+    const char* instruction = ctx_len > 0
+        ? "Continue the sentence below naturally. Choose words that flow grammatically — do NOT repeat words from the background idea verbatim."
+        : "Begin a natural sentence expressing the background idea. Do NOT start with words copied from the background.";
+
     if (preamble) {
         snprintf(buf, buf_size,
             "%s"
-            "Text so far: \"%s\"\n"
-            "You are writing text in the given style about the given topic.\n"
-            "Provide the %d most natural next complete words for this text.\n"
-            "Return ONLY a JSON object like: {\"love\": 0.4, \"enjoy\": 0.3, \"like\": 0.2, \"want\": 0.1} — probs sum to 1.0.",
-            preamble, ctx, n);
+            "%s\n"
+            "Sentence so far: \"%s\"\n"
+            "Provide the %d most grammatically natural next words.\n"
+            "Return ONLY a JSON object like: {\"really\": 0.4, \"always\": 0.3, \"absolutely\": 0.2, \"truly\": 0.1} — probs sum to 1.0.",
+            preamble, instruction, ctx ? ctx : "", n);
     } else {
         snprintf(buf, buf_size,
-            "Text so far: \"%s\"\n"
-            "Provide the %d most natural next complete words.\n"
-            "Return ONLY a JSON object like: {\"love\": 0.4, \"enjoy\": 0.3, \"like\": 0.2, \"want\": 0.1} — probs sum to 1.0.",
-            ctx, n);
+            "Write a natural sentence. Sentence so far: \"%s\"\n"
+            "%s\n"
+            "Provide the %d most probable next words.\n"
+            "Return ONLY a JSON object — probs sum to 1.0.",
+            ctx ? ctx : "", instruction, n);
     }
     return buf;
 }

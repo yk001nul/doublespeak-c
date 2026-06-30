@@ -32,6 +32,16 @@ void         llm_client_destroy(LLMClient* client);
 char* llm_client_build_preamble(int style, const char* topic);
 
 /*
+ * Return a fixed sentence-seed string for the given style (e.g. "I" for chat,
+ * "Scientists" for news).  The encoder prepends this to full_text before the
+ * first Meteor step so distributions are conditioned on a natural sentence
+ * start.  The decoder skips the seed words in the covertext.
+ * Returns NULL for METEOR_STYLE_NONE.  The returned pointer is a string literal
+ * — do NOT free() it.
+ */
+const char* llm_client_style_seed(int style);
+
+/*
  * Get syllable distribution for one Meteor step.
  * preamble       : style/topic prefix from llm_client_build_preamble(), or NULL
  * full_context   : generated text so far (not including preamble)

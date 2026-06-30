@@ -53,6 +53,28 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         memcpy(full_text, starting_context, ctx_len);
     full_text[ctx_len] = '\0';
 
+    /* Seed the sentence with a fixed opener so the first LLM query is
+       conditioned on a natural sentence start ("I", "Scientists", ...).
+       The seed is included verbatim in the covertext; the decoder skips it. */
+    if (ctx->style != METEOR_STYLE_NONE) {
+        const char* seed = llm_client_style_seed((int)ctx->style);
+        if (seed) {
+            size_t slen = strlen(seed);
+            if (slen + 1 > buf_cap) {
+                buf_cap = slen + (size_t)ctx->max_steps * 32 + 64;
+                char* tmp = (char*)realloc(full_text, buf_cap);
+                if (!tmp) {
+                    free(preamble); free(msg_bits); prng_wipe(&prng);
+                    *out_error = METEOR_ERR_OOM;
+                    return NULL;
+                }
+                full_text = tmp;
+            }
+            memcpy(full_text, seed, slen);
+            full_text[slen] = '\0';
+        }
+    }
+
     size_t bit_offset = 0;
     int    steps      = 0;
 

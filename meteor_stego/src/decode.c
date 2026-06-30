@@ -104,9 +104,16 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     /* build style preamble (NULL in legacy mode) */
     char* preamble = llm_client_build_preamble((int)ctx->style, starting_context);
 
-    /* in style mode all covertext words are encoded; in legacy mode skip the
-     * starting_context words that appear verbatim at the front */
-    int    skip_words = (ctx->style == METEOR_STYLE_NONE) ? count_words(starting_context) : 0;
+    /* The sentence seed is a fixed, unencoded opener prepended by the encoder.
+     * The decoder skips those words in the covertext and primes full_recon with
+     * the same seed so the LLM context is byte-identical on both sides. */
+    const char* seed      = llm_client_style_seed((int)ctx->style);
+    int seed_word_count   = (ctx->style != METEOR_STYLE_NONE && seed)
+                            ? count_words(seed) : 0;
+
+    int    skip_words = (ctx->style == METEOR_STYLE_NONE)
+                        ? count_words(starting_context)
+                        : seed_word_count;
     int    word_count = 0;
     char** words      = extract_words(covertext, skip_words, &word_count);
 
@@ -133,18 +140,22 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         return NULL;
     }
     size_t recon_len = 0;
-    if (ctx->style == METEOR_STYLE_NONE && starting_context) {
-        recon_len = strlen(starting_context);
-        if (recon_len + 1 > recon_cap) {
-            recon_cap  = recon_len + 4096;
-            full_recon = (char*)realloc(full_recon, recon_cap);
-            if (!full_recon) {
-                free(recovered_bits); free(preamble);
-                free_words(words, word_count); prng_wipe(&prng);
-                *out_error = METEOR_ERR_OOM; return NULL;
+    {
+        const char* recon_seed = (ctx->style == METEOR_STYLE_NONE)
+                                 ? starting_context : seed;
+        if (recon_seed && recon_seed[0]) {
+            recon_len = strlen(recon_seed);
+            if (recon_len + 1 > recon_cap) {
+                recon_cap  = recon_len + 4096;
+                full_recon = (char*)realloc(full_recon, recon_cap);
+                if (!full_recon) {
+                    free(recovered_bits); free(preamble);
+                    free_words(words, word_count); prng_wipe(&prng);
+                    *out_error = METEOR_ERR_OOM; return NULL;
+                }
             }
+            memcpy(full_recon, recon_seed, recon_len);
         }
-        memcpy(full_recon, starting_context, recon_len);
     }
     full_recon[recon_len] = '\0';
 
