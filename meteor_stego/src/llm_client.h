@@ -75,6 +75,20 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
                                        const char* full_context,
                                        const char* blacklist_word);
 
+/*
+ * Get a distribution over multi-word phrases for one Meteor step (style mode).
+ * Returns N phrase candidates (e.g. "drives to work", "takes the bus") with
+ * probabilities.  The grammar forces lowercase-only multi-word keys.
+ * preamble: style/topic preamble from llm_client_build_preamble(), or NULL.
+ * full_context: covertext generated so far (including seed).
+ * blacklist_phrase: phrase chosen in the previous step; suppress repetition.
+ * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ */
+LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
+                                          const char* preamble,
+                                          const char* full_context,
+                                          const char* blacklist_phrase);
+
 void llm_response_free(LLMResponse* resp);
 
 /* Returns 1 if the server at base_url/health responds OK, 0 otherwise. */

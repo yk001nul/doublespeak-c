@@ -87,26 +87,26 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
             return NULL;
         }
 
-        /* ── Word-level encode loop (embellishment mode) ────────────────── */
-        char last_word[64] = {0}; /* blacklist: word chosen in the previous step */
+        /* ── Phrase-level encode loop (style mode) ──────────────────────── */
+        char last_phrase[64] = {0}; /* blacklist: phrase chosen in the previous step */
         while (bit_offset < total_bits && steps < ctx->max_steps) {
-            LLMResponse* resp = llm_client_get_word_dist(
+            LLMResponse* resp = llm_client_get_phrase_dist(
                 ctx->llm, preamble, full_text,
-                last_word[0] ? last_word : NULL);
+                last_phrase[0] ? last_phrase : NULL);
             if (!resp) { *out_error = METEOR_ERR_LLM; break; }
 
-            const char** w_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
-            float*       w_probs = (float*)malloc((size_t)resp->count * sizeof(float));
-            if (!w_texts || !w_probs) {
-                free(w_texts); free(w_probs); llm_response_free(resp);
+            const char** p_texts = (const char**)malloc((size_t)resp->count * sizeof(char*));
+            float*       p_probs = (float*)malloc((size_t)resp->count * sizeof(float));
+            if (!p_texts || !p_probs) {
+                free(p_texts); free(p_probs); llm_response_free(resp);
                 *out_error = METEOR_ERR_OOM; break;
             }
             for (int i = 0; i < resp->count; i++) {
-                w_texts[i] = resp->candidates[i].text;
-                w_probs[i] = resp->candidates[i].prob;
+                p_texts[i] = resp->candidates[i].text;
+                p_probs[i] = resp->candidates[i].prob;
             }
-            MeteorDist* dist = meteor_build_dist(w_texts, w_probs, resp->count, ctx->beta);
-            free(w_texts); free(w_probs); llm_response_free(resp);
+            MeteorDist* dist = meteor_build_dist(p_texts, p_probs, resp->count, ctx->beta);
+            free(p_texts); free(p_probs); llm_response_free(resp);
             if (!dist) { *out_error = METEOR_ERR_OOM; break; }
 
             MeteorStepResult step = meteor_encode_step(
@@ -116,13 +116,13 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
             bit_offset += (size_t)step.cp_len;
             steps++;
 
-            strncpy(last_word, step.chosen, 63);
-            last_word[63] = '\0';
+            strncpy(last_phrase, step.chosen, 63);
+            last_phrase[63] = '\0';
 
-            /* append chosen word to covertext */
-            size_t wlen   = strlen(step.chosen);
+            /* append chosen phrase (may contain spaces) to covertext */
+            size_t plen   = strlen(step.chosen);
             size_t ft_len = strlen(full_text);
-            size_t needed = ft_len + 1 + wlen + 2;
+            size_t needed = ft_len + 1 + plen + 2;
             if (needed > buf_cap) {
                 buf_cap = needed * 2;
                 char* tmp = (char*)realloc(full_text, buf_cap);
@@ -130,8 +130,8 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
                 full_text = tmp;
             }
             if (ft_len > 0) full_text[ft_len++] = ' ';
-            memcpy(full_text + ft_len, step.chosen, wlen);
-            full_text[ft_len + wlen] = '\0';
+            memcpy(full_text + ft_len, step.chosen, plen);
+            full_text[ft_len + plen] = '\0';
         }
     } else {
         /* ── Syllable-level encode loop (legacy mode) ───────────────────── */

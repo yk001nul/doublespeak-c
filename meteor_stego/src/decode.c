@@ -111,17 +111,14 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     int seed_word_count   = (ctx->style != METEOR_STYLE_NONE && seed)
                             ? count_words(seed) : 0;
 
-    int    skip_words = (ctx->style == METEOR_STYLE_NONE)
-                        ? count_words(starting_context)
-                        : seed_word_count;
+    /* words[] is only populated in the syllable-mode path; NULL-safe free at end */
     int    word_count = 0;
-    char** words      = extract_words(covertext, skip_words, &word_count);
+    char** words      = NULL;
 
     MeteorPRNG prng;
     int rc = prng_init_raw(&prng, ctx->key);
     if (rc != 0) {
         free(preamble);
-        free_words(words, word_count);
         *out_error = METEOR_ERR_CRYPTO;
         return NULL;
     }
@@ -134,7 +131,6 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     if (!full_recon || !recovered_bits) {
         free(recovered_bits); free(full_recon);
         free(preamble);
-        free_words(words, word_count);
         prng_wipe(&prng);
         *out_error = METEOR_ERR_OOM;
         return NULL;
@@ -149,8 +145,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
                 recon_cap  = recon_len + 4096;
                 full_recon = (char*)realloc(full_recon, recon_cap);
                 if (!full_recon) {
-                    free(recovered_bits); free(preamble);
-                    free_words(words, word_count); prng_wipe(&prng);
+                    free(recovered_bits); free(preamble); prng_wipe(&prng);
                     *out_error = METEOR_ERR_OOM; return NULL;
                 }
             }
@@ -162,57 +157,98 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     int done = 0;
 
     if (ctx->style != METEOR_STYLE_NONE) {
-        /* ── Word-level decode loop (embellishment mode) ──────────────── */
-        const char* last_word = NULL; /* blacklist for the next LLM call */
-        for (int wi = 0; wi < word_count && !done; wi++) {
-            const char* word = words[wi];
+        /* ── Phrase-level decode loop (style mode) ────────────────────── */
+        /* Advance past the seed words in the raw covertext string */
+        const char* remaining = covertext;
+        for (int i = 0; i < seed_word_count && *remaining; i++) {
+            while (*remaining && !isalpha((unsigned char)*remaining)) remaining++;
+            while (*remaining && isalpha((unsigned char)*remaining)) remaining++;
+        }
+        while (*remaining == ' ') remaining++;
 
-            LLMResponse* resp = llm_client_get_word_dist(
-                ctx->llm, preamble, full_recon, last_word);
+        char last_phrase[64] = {0};
+        int  steps           = 0;
+
+        while (*remaining && !done && steps < ctx->max_steps) {
+            LLMResponse* resp = llm_client_get_phrase_dist(
+                ctx->llm, preamble, full_recon,
+                last_phrase[0] ? last_phrase : NULL);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
-            const char** w_texts = (const char**)malloc(
+            const char** p_texts = (const char**)malloc(
                 (size_t)resp->count * sizeof(char*));
-            float* w_probs = (float*)malloc(
+            float* p_probs = (float*)malloc(
                 (size_t)resp->count * sizeof(float));
-            if (!w_texts || !w_probs) {
-                free(w_texts); free(w_probs); llm_response_free(resp);
+            if (!p_texts || !p_probs) {
+                free(p_texts); free(p_probs); llm_response_free(resp);
                 *out_error = METEOR_ERR_OOM; done = 1; break;
             }
             for (int i = 0; i < resp->count; i++) {
-                w_texts[i] = resp->candidates[i].text;
-                w_probs[i] = resp->candidates[i].prob;
+                p_texts[i] = resp->candidates[i].text;
+                p_probs[i] = resp->candidates[i].prob;
             }
             MeteorDist* dist = meteor_build_dist(
-                w_texts, w_probs, resp->count, ctx->beta);
-            free(w_texts); free(w_probs); llm_response_free(resp);
+                p_texts, p_probs, resp->count, ctx->beta);
+            free(p_texts); free(p_probs); llm_response_free(resp);
             if (!dist) { *out_error = METEOR_ERR_OOM; done = 1; break; }
 
+            /* find the longest candidate that is a prefix of remaining */
+            const char* chosen     = NULL;
+            int         chosen_len = 0;
+            for (int i = 0; i < dist->count; i++) {
+                const char* cand = dist->slots[i].text;
+                int clen = (int)strlen(cand);
+                if (clen > chosen_len &&
+                    strncmp(remaining, cand, (size_t)clen) == 0) {
+                    chosen     = cand;
+                    chosen_len = clen;
+                }
+            }
+            if (!chosen) {
+                chosen     = dist->slots[0].text;
+                chosen_len = (int)strlen(chosen);
+            }
+
+            char chosen_buf[64];
+            strncpy(chosen_buf, chosen, 63);
+            chosen_buf[63] = '\0';
+            int advance = chosen_len;
+
             uint8_t step_bits[32];
-            int nbits = run_decode_step(word, dist, &prng, ctx->beta, step_bits);
+            int nbits = run_decode_step(chosen_buf, dist, &prng, ctx->beta, step_bits);
 
             for (int b = 0; b < nbits && rb_count < MAX_RECOVERED_BITS; b++)
                 recovered_bits[rb_count++] = step_bits[b];
 
             if (null_terminator_found(recovered_bits, rb_count)) { done = 1; break; }
 
-            last_word = word; /* blacklist this word on the next LLM call */
+            strncpy(last_phrase, chosen_buf, 63);
+            last_phrase[63] = '\0';
+
+            /* advance past the matched phrase and any following space */
+            remaining += advance;
+            while (*remaining == ' ') remaining++;
 
             /* advance full_recon */
-            size_t wlen   = strlen(word);
-            size_t needed = recon_len + 1 + wlen + 2;
+            size_t plen   = strlen(chosen_buf);
+            size_t needed = recon_len + 1 + plen + 2;
             if (needed > recon_cap) {
                 recon_cap  = needed * 2;
                 full_recon = (char*)realloc(full_recon, recon_cap);
                 if (!full_recon) { *out_error = METEOR_ERR_OOM; done = 1; break; }
             }
             if (recon_len > 0) full_recon[recon_len++] = ' ';
-            memcpy(full_recon + recon_len, word, wlen);
-            recon_len += wlen;
+            memcpy(full_recon + recon_len, chosen_buf, plen);
+            recon_len += plen;
             full_recon[recon_len] = '\0';
+
+            steps++;
         }
     } else {
         /* ── Syllable-level decode loop (legacy mode) ─────────────────── */
+        int skip_words = count_words(starting_context);
+        words = extract_words(covertext, skip_words, &word_count);
+
         for (int wi = 0; wi < word_count && !done; wi++) {
             const char* word      = words[wi];
             const char* remaining = word;

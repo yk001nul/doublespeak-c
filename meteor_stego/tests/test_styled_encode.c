@@ -52,7 +52,7 @@ static void test_style(const char*  label,
         .salt           = salt,
         .salt_len       = 32,
         .beta           = 3,
-        .num_candidates = 6,
+        .num_candidates = 8,  /* 2^beta=2^3=8: fills all slots, 3 bits/phrase */
         .llm_url        = "http://127.0.0.1:8080",
         .hyphen_dict    = NULL,
         .max_steps      = 256,
@@ -103,14 +103,24 @@ int main(void)
 
     printf("Server reachable — running styled encode tests...\n");
 
-    test_style("INFORMAL_CHAT — burger topic",
+    test_style("INFORMAL_CHAT — commute sentence",
                METEOR_STYLE_INFORMAL_CHAT,
-               "i like burger. burger good.",
+               "John goes to the office using his car every morning.",
                "hi");
 
-    test_style("NEWS_ARTICLE — climate topic",
+    test_style("NEWS_ARTICLE — policy sentence",
                METEOR_STYLE_NEWS_ARTICLE,
-               "global temperatures rising, scientists warn of consequences",
+               "The government announced new policies to reduce carbon emissions by 2030.",
+               "hi");
+
+    test_style("CASUAL_BLOG — weekend sentence",
+               METEOR_STYLE_CASUAL_BLOG,
+               "Sarah spent the whole weekend hiking in the mountains with her dog.",
+               "hi");
+
+    test_style("FORMAL_EMAIL — meeting sentence",
+               METEOR_STYLE_FORMAL_EMAIL,
+               "The team will present the quarterly results to stakeholders on Friday.",
                "hi");
 
     printf("\n%d passed, %d failed\n", passed, failed);

@@ -310,6 +310,15 @@ static const char* NEW_WORD_GRAMMAR =
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
 
+/* Phrase grammar: keys are multi-word lowercase phrases (1+ words separated by spaces). */
+static const char* PHRASE_GRAMMAR =
+    "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
+    "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
+    "phrase      ::= word (\" \" word)*\n"
+    "word        ::= [a-z]+\n"
+    "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+    "ws          ::= [ \\t\\n]*\n";
+
 /* Continuation grammar: one-or-more syllable pairs, then the EOW pair "·" is
  * mandatory at the end.  This guarantees the model always emits an EOW
  * probability so words cannot grow without bound. */
@@ -346,15 +355,15 @@ char* llm_client_build_preamble(int style, const char* topic)
 {
     const char* sname = style_to_str(style);
     if (!sname || !topic || !*topic) return NULL;
-    size_t n = strlen(topic) + strlen(sname) + 128;
+    size_t n = strlen(topic) + strlen(sname) + 192;
     char* buf = (char*)malloc(n);
     if (!buf) return NULL;
     snprintf(buf, n,
-        "Background idea: \"%s\"\n"
-        "Style: %s\n"
-        "Express this idea naturally — do NOT echo the background words literally.\n"
+        "Paraphrase the sentence below as a %s.\n"
+        "Keep the same meaning but use natural vocabulary for that style.\n"
+        "Original: \"%s\"\n"
         "---\n",
-        topic, sname);
+        sname, topic);
     return buf;
 }
 
@@ -489,31 +498,68 @@ static char* build_word_prompt(const char* preamble, const char* ctx, int n,
     char*  buf        = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
-    const char* instruction = ctx_len > 0
-        ? "Continue the sentence below naturally. Use meaningful nouns, verbs, and adjectives — do NOT use generic filler adverbs or repeat words from the background."
-        : "Begin a natural sentence expressing the background idea. Use a meaningful content word — do NOT copy words from the background.";
+    /* First step: no text generated yet; ask for a strong opening word.
+       Subsequent steps: continue the paraphrase from where it left off. */
+    const char* phase = ctx_len > 0
+        ? "Continue the paraphrase. Use specific nouns, verbs, and details from the original — do NOT use emotional adjectives like wonderful, fantastic, or craving."
+        : "Begin the paraphrase with one strong content word from the original — do NOT use emotional adjectives.";
 
-    /* blacklist clause — empty string when no prior word */
+    /* blacklist clause — suppress the word used in the previous step */
     char bl_clause[96] = {0};
     if (bl_len > 0)
         snprintf(bl_clause, sizeof(bl_clause),
-                 "\nDo NOT suggest \"%s\" (just used — vary the vocabulary).", blacklist);
+                 "\nDo NOT repeat \"%s\" (just used).", blacklist);
 
     if (preamble) {
         snprintf(buf, buf_size,
             "%s"
             "%s%s\n"
-            "Sentence so far: \"%s\"\n"
-            "Provide the %d most natural next words (nouns, verbs, adjectives preferred).\n"
+            "Paraphrase so far: \"%s\"\n"
+            "Provide the %d most probable next words.\n"
             "Return ONLY a JSON object like: {\"enjoying\": 0.4, \"craving\": 0.3, \"fantastic\": 0.2, \"wonderful\": 0.1} — probs sum to 1.0.",
-            preamble, instruction, bl_clause, ctx ? ctx : "", n);
+            preamble, phase, bl_clause, ctx ? ctx : "", n);
     } else {
         snprintf(buf, buf_size,
             "Write a natural sentence. Sentence so far: \"%s\"\n"
             "%s%s\n"
             "Provide the %d most probable next words.\n"
             "Return ONLY a JSON object — probs sum to 1.0.",
-            ctx ? ctx : "", instruction, bl_clause, n);
+            ctx ? ctx : "", phase, bl_clause, n);
+    }
+    return buf;
+}
+
+static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
+                                  const char* blacklist_phrase)
+{
+    size_t pre_len  = preamble         ? strlen(preamble)         : 0;
+    size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
+    size_t bl_len   = blacklist_phrase && blacklist_phrase[0]
+                      ? strlen(blacklist_phrase) : 0;
+    size_t buf_size = pre_len + ctx_len + bl_len + 768;
+    char*  buf      = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+
+    char bl_clause[128] = {0};
+    if (bl_len > 0)
+        snprintf(bl_clause, sizeof(bl_clause),
+                 "\nDo NOT repeat the phrase \"%s\".", blacklist_phrase);
+
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Paraphrase so far: \"%s\"\n"
+            "Continue with a natural 3-word phrase in the same style.%s\n"
+            "Provide %d different 3-word phrase continuations with probabilities.\n"
+            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives his car\": 0.3, \"leaves home early\": 0.2, \"commutes every day\": 0.1} — probs sum to 1.0.",
+            preamble, ctx ? ctx : "", bl_clause, n);
+    } else {
+        snprintf(buf, buf_size,
+            "Sentence so far: \"%s\"\n"
+            "Continue with a natural 3-word phrase.%s\n"
+            "Provide %d different 3-word phrase continuations with probabilities.\n"
+            "Return ONLY a JSON object — probs sum to 1.0.",
+            ctx ? ctx : "", bl_clause, n);
     }
     return buf;
 }
@@ -529,6 +575,30 @@ static const char* FALLBACK_WORDS[] = {
     "for", "on", "are", "with", "as", "at", "be", "this", "was", "but"
 };
 #define FALLBACK_WORDS_COUNT 20
+
+static const char* FALLBACK_PHRASES[] = {
+    "and the world",   "in the morning",  "at the office",  "on the street",
+    "to the market",   "by the river",    "with the team",  "from the start",
+    "for the cause",   "of the year",     "under the sky",  "over the hill",
+    "into the night",  "through the day", "around the town", "before the dawn",
+    "after the rain",  "among the trees", "beside the road", "along the way"
+};
+#define FALLBACK_PHRASES_COUNT 20
+
+static LLMResponse* uniform_phrase_fallback(int n)
+{
+    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
+    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
+    resp->count       = n;
+    float p = 1.0f / (float)n;
+    for (int i = 0; i < n; i++) {
+        strncpy(resp->candidates[i].text,
+                FALLBACK_PHRASES[i % FALLBACK_PHRASES_COUNT], 63);
+        resp->candidates[i].text[63] = '\0';
+        resp->candidates[i].prob = p;
+    }
+    return resp;
+}
 
 static LLMResponse* uniform_word_fallback(int n)
 {
@@ -632,6 +702,42 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
         return uniform_word_fallback(client->max_candidates);
+    }
+    return resp;
+}
+
+LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
+                                          const char* preamble,
+                                          const char* full_context,
+                                          const char* blacklist_phrase)
+{
+    char* prompt = build_phrase_prompt(preamble, full_context,
+                                       client->max_candidates, blacklist_phrase);
+    if (!prompt) return NULL;
+
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt",      prompt);
+    cJSON_AddStringToObject(req, "grammar",     PHRASE_GRAMMAR);
+    cJSON_AddNumberToObject(req, "n_predict",   256);
+    cJSON_AddNumberToObject(req, "temperature", 0.0);
+    cJSON_AddNumberToObject(req, "seed",        42);
+    cJSON_AddBoolToObject  (req, "stream",      0);
+    char* body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    free(prompt);
+    if (!body) return NULL;
+
+    char* raw = HTTP_POST(client, "/completion", body);
+    free(body);
+
+    if (!raw) return uniform_phrase_fallback(client->max_candidates);
+
+    LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
+    free(raw);
+
+    if (!resp || resp->count == 0) {
+        llm_response_free(resp);
+        return uniform_phrase_fallback(client->max_candidates);
     }
     return resp;
 }
