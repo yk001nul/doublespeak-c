@@ -530,36 +530,95 @@ static char* build_word_prompt(const char* preamble, const char* ctx, int n,
 }
 
 static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
-                                  const char* blacklist_phrase)
+                                  const char* blacklist_phrases,
+                                  const char* blacklist_words,
+                                  const char* subject_anchor)
 {
     size_t pre_len  = preamble         ? strlen(preamble)         : 0;
     size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
-    size_t bl_len   = blacklist_phrase && blacklist_phrase[0]
-                      ? strlen(blacklist_phrase) : 0;
-    size_t buf_size = pre_len + ctx_len + bl_len + 768;
+    size_t bl_len   = blacklist_phrases && blacklist_phrases[0]
+                      ? strlen(blacklist_phrases) : 0;
+    size_t bw_len   = blacklist_words && blacklist_words[0]
+                      ? strlen(blacklist_words) : 0;
+    size_t sa_len   = subject_anchor && subject_anchor[0]
+                      ? strlen(subject_anchor) : 0;
+    /* 2048 covers the fixed wrapper/instruction text (phase + subj/bl/bw
+       clause wording + JSON-format example) with headroom — measured at
+       ~1150 bytes as of the subject-anchor + word-blacklist prompt. A
+       flat 1024 was undersized here and silently truncated the trailing
+       "Return ONLY a JSON object..." format example via snprintf, which
+       correlated with a spike in the model failing to return parseable
+       JSON (falling back to the hardcoded FALLBACK_PHRASES table). */
+    size_t buf_size = pre_len + ctx_len + bl_len + bw_len + sa_len + 2048;
     char*  buf      = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
-    char bl_clause[128] = {0};
+    /* First step: no text generated yet — every candidate MUST open with an
+       explicit subject so later steps have a grammatical anchor to agree
+       with (a bare verb-phrase/prepositional opener has nothing to agree
+       with, which is what caused subject-less fragments in practice).
+       Subsequent steps: must grammatically continue the exact sentence
+       built so far (same subject, same tense, no restart). */
+    const char* phase = ctx_len > 0
+        ? "Continue the sentence above with its next 2-5 words, in fluent English. "
+          "The continuation must agree in tense and subject with the text that "
+          "precedes it — do NOT switch to a new subject, do NOT start a new "
+          "sentence, and do NOT give a bare list of nouns. Among the candidates, "
+          "roughly half should open with a light connector (\"and\", \"then\", "
+          "\"while\", \"after that\", or a leading comma) that links naturally to "
+          "the text before it; the other half should continue directly with no "
+          "connector. Do not just concatenate verb phrases with no linking word."
+        : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
+          "start with an explicit subject — a pronoun (he/she/they/it) or a noun "
+          "phrase (\"the team\", \"the government\") — immediately followed by its "
+          "verb. Do NOT start with a preposition, a bare verb, or a dangling "
+          "phrase with no subject.";
+
+    char bl_clause[640] = {0};
     if (bl_len > 0)
         snprintf(bl_clause, sizeof(bl_clause),
-                 "\nDo NOT repeat the phrase \"%s\".", blacklist_phrase);
+                 "\nDo NOT repeat any of these already-used phrases: %s.",
+                 blacklist_phrases);
+
+    /* Word-level blacklist catches repetition the phrase-level blacklist
+       misses: a candidate can dodge the exact-phrase check while still
+       reusing an individual content word from an earlier phrase (e.g.
+       "rides smoothly" then "smoothly continues" a few steps later). */
+    char bw_clause[640] = {0};
+    if (bw_len > 0)
+        snprintf(bw_clause, sizeof(bw_clause),
+                 "\nAlso avoid reusing these specific words in any candidate, "
+                 "even inside an otherwise new phrase: %s.",
+                 blacklist_words);
+
+    /* Naming the exact subject text (rather than just saying "don't switch
+       subjects") gives the model a concrete anchor instead of an abstract
+       rule — bit-driven slot selection can still land on a candidate that
+       drops the subject if the rule is vague, since selection is not
+       quality-ranked. */
+    char subj_clause[320] = {0};
+    if (sa_len > 0)
+        snprintf(subj_clause, sizeof(subj_clause),
+                 "\nThe sentence's subject was established by its opening: \"%s\". "
+                 "Every candidate MUST remain about that exact subject — do not "
+                 "switch to a different person/thing, and do not drop the subject.",
+                 subject_anchor);
 
     if (preamble) {
         snprintf(buf, buf_size,
             "%s"
-            "Paraphrase so far: \"%s\"\n"
-            "Continue with a natural 3-word phrase in the same style.%s\n"
-            "Provide %d different 3-word phrase continuations with probabilities.\n"
-            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives his car\": 0.3, \"leaves home early\": 0.2, \"commutes every day\": 0.1} — probs sum to 1.0.",
-            preamble, ctx ? ctx : "", bl_clause, n);
+            "Sentence so far: \"%s\"\n"
+            "%s%s%s%s\n"
+            "Provide %d different natural continuations with probabilities.\n"
+            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives\": 0.3, \"takes the bus every day\": 0.2, \"commutes early\": 0.1} — probs sum to 1.0.",
+            preamble, ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
     } else {
         snprintf(buf, buf_size,
             "Sentence so far: \"%s\"\n"
-            "Continue with a natural 3-word phrase.%s\n"
-            "Provide %d different 3-word phrase continuations with probabilities.\n"
+            "%s%s%s%s\n"
+            "Provide %d different natural continuations with probabilities.\n"
             "Return ONLY a JSON object — probs sum to 1.0.",
-            ctx ? ctx : "", bl_clause, n);
+            ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
     }
     return buf;
 }
@@ -709,10 +768,13 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
 LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* preamble,
                                           const char* full_context,
-                                          const char* blacklist_phrase)
+                                          const char* blacklist_phrases,
+                                          const char* blacklist_words,
+                                          const char* subject_anchor)
 {
     char* prompt = build_phrase_prompt(preamble, full_context,
-                                       client->max_candidates, blacklist_phrase);
+                                       client->max_candidates, blacklist_phrases,
+                                       blacklist_words, subject_anchor);
     if (!prompt) return NULL;
 
     cJSON* req = cJSON_CreateObject();

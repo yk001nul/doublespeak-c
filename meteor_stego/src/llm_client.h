@@ -80,14 +80,24 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
  * Returns N phrase candidates (e.g. "drives to work", "takes the bus") with
  * probabilities.  The grammar forces lowercase-only multi-word keys.
  * preamble: style/topic preamble from llm_client_build_preamble(), or NULL.
- * full_context: covertext generated so far (including seed).
- * blacklist_phrase: phrase chosen in the previous step; suppress repetition.
+ * full_context: covertext generated so far.
+ * blacklist_phrases: comma-separated phrases chosen in recent prior steps;
+ *   suppress repeating any of them. NULL/empty on the first step.
+ * blacklist_words: comma-separated individual content words (nouns/verbs/
+ *   adjectives) drawn from recently chosen phrases; suppress reusing any of
+ *   them even inside a new, otherwise-unseen phrase. NULL/empty on the
+ *   first step. See meteor_word_history_add()/_join() in meteor_core.h.
+ * subject_anchor: the first chosen phrase (which is forced to open with an
+ *   explicit subject), named verbatim in the prompt so every later step has
+ *   a concrete subject to stay consistent with. NULL on the first step.
  * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
  */
 LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* preamble,
                                           const char* full_context,
-                                          const char* blacklist_phrase);
+                                          const char* blacklist_phrases,
+                                          const char* blacklist_words,
+                                          const char* subject_anchor);
 
 void llm_response_free(LLMResponse* resp);
 

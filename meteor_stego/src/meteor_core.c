@@ -186,3 +186,78 @@ int meteor_decode_step(const char*       chosen_syllable,
 
     return cp_len;
 }
+
+/* ── content-word history ────────────────────────────────────────────────── */
+
+static const char* WORD_HISTORY_STOPWORDS[] = {
+    "a", "an", "the", "to", "in", "on", "at", "of", "and", "or", "but",
+    "so", "if", "his", "her", "its", "their", "he", "she", "it", "they",
+    "is", "are", "was", "were", "be", "been", "this", "that", "with",
+    "for", "as", "by", "not", "no", "do", "does", "did", "has", "have",
+    "had", "will", "shall", "can", "could", "would", "should", "may",
+    "might", "must", "onto", "from", "into", "up", "down", "out", "off",
+    "over", "under", "then", "than", "too", "very", "just", "about",
+    "after", "before", "while", "during", "through", "also",
+};
+#define WORD_HISTORY_STOPWORD_COUNT \
+    (sizeof(WORD_HISTORY_STOPWORDS) / sizeof(WORD_HISTORY_STOPWORDS[0]))
+
+static int is_stopword(const char* w, size_t len)
+{
+    for (size_t i = 0; i < WORD_HISTORY_STOPWORD_COUNT; i++) {
+        const char* sw = WORD_HISTORY_STOPWORDS[i];
+        if (strlen(sw) == len && strncmp(w, sw, len) == 0) return 1;
+    }
+    return 0;
+}
+
+void meteor_word_history_add(MeteorWordHistory* hist, const char* phrase)
+{
+    if (!hist || !phrase) return;
+
+    const char* p = phrase;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char* start = p;
+        while (*p && *p != ' ') p++;
+        size_t len = (size_t)(p - start);
+
+        if (len < 3 || len >= CONTENT_WORD_MAXLEN || is_stopword(start, len))
+            continue;
+
+        int dup = 0;
+        for (int i = 0; i < hist->count; i++) {
+            if (strlen(hist->words[i]) == len &&
+                strncmp(hist->words[i], start, len) == 0) { dup = 1; break; }
+        }
+        if (dup) continue;
+
+        if (hist->count < CONTENT_WORD_HISTORY) {
+            memcpy(hist->words[hist->count], start, len);
+            hist->words[hist->count][len] = '\0';
+            hist->count++;
+        } else {
+            for (int i = 0; i < CONTENT_WORD_HISTORY - 1; i++)
+                memcpy(hist->words[i], hist->words[i + 1], CONTENT_WORD_MAXLEN);
+            memcpy(hist->words[CONTENT_WORD_HISTORY - 1], start, len);
+            hist->words[CONTENT_WORD_HISTORY - 1][len] = '\0';
+        }
+    }
+}
+
+void meteor_word_history_join(const MeteorWordHistory* hist,
+                               char* out, size_t out_size)
+{
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!hist) return;
+
+    size_t off = 0;
+    for (int i = 0; i < hist->count; i++) {
+        int w = snprintf(out + off, out_size - off, "%s%s",
+                          i > 0 ? ", " : "", hist->words[i]);
+        if (w < 0 || (size_t)w >= out_size - off) break;
+        off += (size_t)w;
+    }
+}

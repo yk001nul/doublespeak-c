@@ -63,3 +63,27 @@ int meteor_decode_step(const char*       chosen_syllable,
                        MeteorPRNG*       prng,
                        int               beta,
                        uint8_t*          out_bits);
+
+/*
+ * Rolling content-word history for phrase-level repetition avoidance.
+ * Tracks up to CONTENT_WORD_HISTORY distinct non-stopword tokens seen
+ * across recently chosen phrases (oldest evicted first). Shared between
+ * encode.c and decode.c so both sides build a byte-identical blacklist —
+ * any divergence here would corrupt the LLM prompt and desync decoding.
+ */
+#define CONTENT_WORD_HISTORY 8
+#define CONTENT_WORD_MAXLEN  24
+
+typedef struct {
+    char words[CONTENT_WORD_HISTORY][CONTENT_WORD_MAXLEN];
+    int  count;
+} MeteorWordHistory;
+
+/* Tokenizes phrase on spaces and adds each non-stopword, non-duplicate
+ * token (length in [3, CONTENT_WORD_MAXLEN)) to the rolling history. */
+void meteor_word_history_add(MeteorWordHistory* hist, const char* phrase);
+
+/* Writes a comma-joined blacklist string into out (size out_size).
+ * Writes "" if hist is empty. */
+void meteor_word_history_join(const MeteorWordHistory* hist,
+                               char* out, size_t out_size);

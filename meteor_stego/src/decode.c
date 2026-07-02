@@ -104,13 +104,6 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     /* build style preamble (NULL in legacy mode) */
     char* preamble = llm_client_build_preamble((int)ctx->style, starting_context);
 
-    /* The sentence seed is a fixed, unencoded opener prepended by the encoder.
-     * The decoder skips those words in the covertext and primes full_recon with
-     * the same seed so the LLM context is byte-identical on both sides. */
-    const char* seed      = llm_client_style_seed((int)ctx->style);
-    int seed_word_count   = (ctx->style != METEOR_STYLE_NONE && seed)
-                            ? count_words(seed) : 0;
-
     /* words[] is only populated in the syllable-mode path; NULL-safe free at end */
     int    word_count = 0;
     char** words      = NULL;
@@ -138,7 +131,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     size_t recon_len = 0;
     {
         const char* recon_seed = (ctx->style == METEOR_STYLE_NONE)
-                                 ? starting_context : seed;
+                                 ? starting_context : NULL;
         if (recon_seed && recon_seed[0]) {
             recon_len = strlen(recon_seed);
             if (recon_len + 1 > recon_cap) {
@@ -158,21 +151,36 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
     if (ctx->style != METEOR_STYLE_NONE) {
         /* ── Phrase-level decode loop (style mode) ────────────────────── */
-        /* Advance past the seed words in the raw covertext string */
         const char* remaining = covertext;
-        for (int i = 0; i < seed_word_count && *remaining; i++) {
-            while (*remaining && !isalpha((unsigned char)*remaining)) remaining++;
-            while (*remaining && isalpha((unsigned char)*remaining)) remaining++;
-        }
         while (*remaining == ' ') remaining++;
 
-        char last_phrase[64] = {0};
-        int  steps           = 0;
+        /* Must mirror encode.c's history depth/join format exactly — the
+           blacklist text is part of the LLM prompt and any divergence
+           corrupts prefix-matching for every following step. */
+        #define PHRASE_HISTORY 6
+        char phrase_history[PHRASE_HISTORY][64] = {{0}};
+        int  hist_count = 0;
+        int  steps      = 0;
+        char subject_anchor[64] = {0};
+        MeteorWordHistory content_hist = {0};
 
         while (*remaining && !done && steps < ctx->max_steps) {
+            char blacklist_buf[512] = {0};
+            size_t bl_off = 0;
+            for (int i = 0; i < hist_count; i++) {
+                int w = snprintf(blacklist_buf + bl_off, sizeof(blacklist_buf) - bl_off,
+                                  "%s%s", i > 0 ? ", " : "", phrase_history[i]);
+                if (w > 0) bl_off += (size_t)w;
+            }
+            char word_blacklist_buf[256] = {0};
+            meteor_word_history_join(&content_hist, word_blacklist_buf,
+                                      sizeof(word_blacklist_buf));
+
             LLMResponse* resp = llm_client_get_phrase_dist(
                 ctx->llm, preamble, full_recon,
-                last_phrase[0] ? last_phrase : NULL);
+                hist_count > 0 ? blacklist_buf : NULL,
+                word_blacklist_buf[0] ? word_blacklist_buf : NULL,
+                subject_anchor[0] ? subject_anchor : NULL);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
             const char** p_texts = (const char**)malloc(
@@ -222,8 +230,23 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
             if (null_terminator_found(recovered_bits, rb_count)) { done = 1; break; }
 
-            strncpy(last_phrase, chosen_buf, 63);
-            last_phrase[63] = '\0';
+            if (subject_anchor[0] == '\0') {
+                strncpy(subject_anchor, chosen_buf, 63);
+                subject_anchor[63] = '\0';
+            }
+
+            meteor_word_history_add(&content_hist, chosen_buf);
+
+            if (hist_count < PHRASE_HISTORY) {
+                strncpy(phrase_history[hist_count], chosen_buf, 63);
+                phrase_history[hist_count][63] = '\0';
+                hist_count++;
+            } else {
+                for (int i = 0; i < PHRASE_HISTORY - 1; i++)
+                    memcpy(phrase_history[i], phrase_history[i + 1], 64);
+                strncpy(phrase_history[PHRASE_HISTORY - 1], chosen_buf, 63);
+                phrase_history[PHRASE_HISTORY - 1][63] = '\0';
+            }
 
             /* advance past the matched phrase and any following space */
             remaining += advance;
@@ -244,6 +267,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
             steps++;
         }
+        #undef PHRASE_HISTORY
     } else {
         /* ── Syllable-level decode loop (legacy mode) ─────────────────── */
         int skip_words = count_words(starting_context);
