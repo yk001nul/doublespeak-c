@@ -261,3 +261,37 @@ void meteor_word_history_join(const MeteorWordHistory* hist,
         off += (size_t)w;
     }
 }
+
+/* ── style question selection ────────────────────────────────────────────── */
+
+static int style_question_is_recent(const StyleQuestionHistory* hist, StyleQuestion q)
+{
+    if (!hist) return 0;
+    for (int i = 0; i < hist->count; i++)
+        if (hist->recent[i] == q) return 1;
+    return 0;
+}
+
+StyleQuestion meteor_draw_style_question(MeteorPRNG* prng,
+                                          const StyleQuestionHistory* hist)
+{
+    StyleQuestion q;
+    int attempts = 0;
+    do {
+        q = (StyleQuestion)(prng_next_bits(prng, 3) % STYLE_Q_COUNT);
+        attempts++;
+    } while (style_question_is_recent(hist, q) && attempts < STYLE_Q_MAX_REDRAWS);
+    return q;
+}
+
+void meteor_style_question_history_push(StyleQuestionHistory* hist, StyleQuestion q)
+{
+    if (!hist) return;
+    if (hist->count < STYLE_Q_HISTORY) {
+        hist->recent[hist->count++] = q;
+    } else {
+        memmove(hist->recent, hist->recent + 1,
+                (size_t)(STYLE_Q_HISTORY - 1) * sizeof(StyleQuestion));
+        hist->recent[STYLE_Q_HISTORY - 1] = q;
+    }
+}

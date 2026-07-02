@@ -1,5 +1,6 @@
 #pragma once
 
+#include "meteor_core.h"
 #include <stddef.h>
 
 typedef struct {
@@ -90,6 +91,10 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
  * subject_anchor: the first chosen phrase (which is forced to open with an
  *   explicit subject), named verbatim in the prompt so every later step has
  *   a concrete subject to stay consistent with. NULL on the first step.
+ * question: which question (STYLE_Q_HOW/WHERE/WHO_MEET/WHO_AVOID/WHY) the
+ *   continuation should answer, drawn via meteor_draw_style_question().
+ *   Ignored when full_context is empty (opening step uses its own
+ *   subject-establishing instruction instead).
  * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
  */
 LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
@@ -97,7 +102,8 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* full_context,
                                           const char* blacklist_phrases,
                                           const char* blacklist_words,
-                                          const char* subject_anchor);
+                                          const char* subject_anchor,
+                                          StyleQuestion question);
 
 void llm_response_free(LLMResponse* resp);
 

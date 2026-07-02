@@ -163,8 +163,15 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         int  steps      = 0;
         char subject_anchor[64] = {0};
         MeteorWordHistory content_hist = {0};
+        StyleQuestionHistory q_hist = {0};
 
         while (*remaining && !done && steps < ctx->max_steps) {
+            /* Must mirror encode.c: drawn every iteration, at the same
+               point relative to the beta-bit draw inside run_decode_step,
+               or the PRNG streams desync. */
+            StyleQuestion question = meteor_draw_style_question(&prng, &q_hist);
+            meteor_style_question_history_push(&q_hist, question);
+
             char blacklist_buf[512] = {0};
             size_t bl_off = 0;
             for (int i = 0; i < hist_count; i++) {
@@ -180,7 +187,8 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
                 ctx->llm, preamble, full_recon,
                 hist_count > 0 ? blacklist_buf : NULL,
                 word_blacklist_buf[0] ? word_blacklist_buf : NULL,
-                subject_anchor[0] ? subject_anchor : NULL);
+                subject_anchor[0] ? subject_anchor : NULL,
+                question);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
             const char** p_texts = (const char**)malloc(

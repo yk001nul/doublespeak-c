@@ -529,10 +529,95 @@ static char* build_word_prompt(const char* preamble, const char* ctx, int n,
     return buf;
 }
 
+/* Per-question continuation instructions, indexed by StyleQuestion.
+   Only used when ctx_len > 0 (see phase selection below) — each narrows
+   the candidates to one concrete axis of variation instead of an
+   open-ended "continue naturally". The opening connector named here is
+   no longer just a hint: build_phrase_grammar() below forces every
+   candidate's phrase to start with one of these exact words via GBNF, so
+   the wording states it as a requirement rather than "typically" — the
+   model has no way to produce a bare new-verb clause instead. */
+static const char* STYLE_QUESTION_PHASE[STYLE_Q_COUNT] = {
+    /* STYLE_Q_HOW */
+    "Continue the sentence above by answering HOW the subject does this — "
+    "the method, tool, or manner involved. Every candidate MUST open with "
+    "\"by\", \"through\", or \"using\", followed by its next 1-4 words "
+    "(\"by turning the key\"). Agree in tense and subject with the text "
+    "that precedes it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHERE */
+    "Continue the sentence above by answering WHERE this is happening — a "
+    "destination, origin, or place. Every candidate MUST open with \"to\", "
+    "\"toward\", \"from\", or \"at\", followed by its next 1-4 words "
+    "(\"to the office\"). Agree in tense and subject with the text that "
+    "precedes it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHO_MEET */
+    "Continue the sentence above by answering WHO the subject intends to "
+    "meet, involve, or work with as part of this. Every candidate MUST "
+    "open with \"to meet\", \"to join\", or \"with\", followed by its next "
+    "1-4 words naming a person or group (\"to meet the manager\"). Agree "
+    "in tense and subject with the text that precedes it — do NOT switch "
+    "subject or start a new sentence.",
+
+    /* STYLE_Q_WHO_AVOID */
+    "Continue the sentence above by answering WHO or WHAT the subject "
+    "wants to avoid, delay, or steer clear of while doing this. Every "
+    "candidate MUST open with \"to avoid\", \"before\", or \"while "
+    "avoiding\", followed by its next 1-4 words (\"to avoid the "
+    "traffic\"). Agree in tense and subject with the text that precedes "
+    "it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHY */
+    "Continue the sentence above by answering WHY the subject is doing "
+    "this — the reason or goal behind it. Every candidate MUST open with "
+    "\"to\", \"in order to\", or \"because\", followed by its next 1-4 "
+    "words (\"to make it to the meeting\"). Agree in tense and subject "
+    "with the text that precedes it — do NOT switch subject or start a "
+    "new sentence.",
+};
+
+/* Connector alternatives per question, as GBNF string-literal alternation
+   bodies (each entry is valid inside a "(...)" grammar group). Must stay
+   in sync word-for-word with the connectors named in STYLE_QUESTION_PHASE
+   above, or the prompt will describe options the grammar doesn't allow. */
+static const char* STYLE_QUESTION_CONNECTOR_GRAMMAR[STYLE_Q_COUNT] = {
+    /* STYLE_Q_HOW       */ "\"by\" | \"through\" | \"using\"",
+    /* STYLE_Q_WHERE     */ "\"to\" | \"toward\" | \"from\" | \"at\"",
+    /* STYLE_Q_WHO_MEET  */ "\"to meet\" | \"to join\" | \"with\"",
+    /* STYLE_Q_WHO_AVOID */ "\"to avoid\" | \"before\" | \"while avoiding\"",
+    /* STYLE_Q_WHY       */ "\"to\" | \"in order to\" | \"because\"",
+};
+
+/* Continuation-step grammar: same JSON shape as PHRASE_GRAMMAR, but each
+   phrase is forced to start with one of the question's connector words
+   (see STYLE_QUESTION_CONNECTOR_GRAMMAR), guaranteeing every candidate —
+   not just "roughly half" — reads as a subordinate clause glued onto the
+   sentence so far, instead of a bare new finite-verb clause. Caller frees
+   with free(). Returns NULL on OOM. */
+static char* build_phrase_grammar(StyleQuestion question)
+{
+    const char* connectors = STYLE_QUESTION_CONNECTOR_GRAMMAR[question];
+    size_t buf_size = strlen(connectors) + 384;
+    char*  buf      = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    snprintf(buf, buf_size,
+        "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
+        "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
+        "phrase      ::= connector (\" \" word)+\n"
+        "connector   ::= %s\n"
+        "word        ::= [a-z]+\n"
+        "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+        "ws          ::= [ \\t\\n]*\n",
+        connectors);
+    return buf;
+}
+
 static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                                   const char* blacklist_phrases,
                                   const char* blacklist_words,
-                                  const char* subject_anchor)
+                                  const char* subject_anchor,
+                                  StyleQuestion question)
 {
     size_t pre_len  = preamble         ? strlen(preamble)         : 0;
     size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
@@ -560,14 +645,7 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
        Subsequent steps: must grammatically continue the exact sentence
        built so far (same subject, same tense, no restart). */
     const char* phase = ctx_len > 0
-        ? "Continue the sentence above with its next 2-5 words, in fluent English. "
-          "The continuation must agree in tense and subject with the text that "
-          "precedes it — do NOT switch to a new subject, do NOT start a new "
-          "sentence, and do NOT give a bare list of nouns. Among the candidates, "
-          "roughly half should open with a light connector (\"and\", \"then\", "
-          "\"while\", \"after that\", or a leading comma) that links naturally to "
-          "the text before it; the other half should continue directly with no "
-          "connector. Do not just concatenate verb phrases with no linking word."
+        ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
           "start with an explicit subject — a pronoun (he/she/they/it) or a noun "
           "phrase (\"the team\", \"the government\") — immediately followed by its "
@@ -770,16 +848,27 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* full_context,
                                           const char* blacklist_phrases,
                                           const char* blacklist_words,
-                                          const char* subject_anchor)
+                                          const char* subject_anchor,
+                                          StyleQuestion question)
 {
     char* prompt = build_phrase_prompt(preamble, full_context,
                                        client->max_candidates, blacklist_phrases,
-                                       blacklist_words, subject_anchor);
+                                       blacklist_words, subject_anchor, question);
     if (!prompt) return NULL;
+
+    /* Opening step (no full_context yet) keeps the free-form grammar —
+       it doesn't use `question` (see build_phrase_prompt). Continuation
+       steps get a per-question grammar that forces the connector, must
+       be freed; the opening step's grammar is a string literal and must
+       NOT be freed. */
+    int   is_continuation = full_context && full_context[0];
+    char* dyn_grammar      = is_continuation ? build_phrase_grammar(question) : NULL;
+    if (is_continuation && !dyn_grammar) { free(prompt); return NULL; }
+    const char* grammar = is_continuation ? dyn_grammar : PHRASE_GRAMMAR;
 
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     PHRASE_GRAMMAR);
+    cJSON_AddStringToObject(req, "grammar",     grammar);
     cJSON_AddNumberToObject(req, "n_predict",   256);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
@@ -787,6 +876,7 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
+    free(dyn_grammar);
     if (!body) return NULL;
 
     char* raw = HTTP_POST(client, "/completion", body);
