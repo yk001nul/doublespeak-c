@@ -137,8 +137,13 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
         return NULL;
     }
 
-    DWORD timeout = (DWORD)impl->timeout_ms;
-    WinHttpSetTimeouts(hRequest, timeout, timeout, timeout, timeout);
+    DWORD conn_timeout = (DWORD)impl->timeout_ms;
+    /* llama-server holds the connection open until generation completes, so the
+       body-receive timeout must cover the full generation time (can exceed 60 s
+       at --threads 1).  Keep connect/send short to detect downed servers fast.
+       WinHttpQueryDataAvailable ignores WINHTTP_OPTION_RECEIVE_TIMEOUT per MSDN;
+       use WinHttpReadData directly so the 300 s deadline is actually enforced. */
+    WinHttpSetTimeouts(hRequest, conn_timeout, conn_timeout, conn_timeout, 300000);
 
     BOOL sent = WinHttpSendRequest(hRequest,
                                    L"Content-Type: application/json\r\n",
@@ -152,16 +157,14 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
         return NULL;
     }
 
-    GrowBuf gb = {0};
-    DWORD   bytes_avail;
-    while (WinHttpQueryDataAvailable(hRequest, &bytes_avail) && bytes_avail > 0) {
-        char* chunk = (char*)malloc(bytes_avail + 1);
-        if (!chunk) break;
-        DWORD bytes_read = 0;
-        WinHttpReadData(hRequest, chunk, bytes_avail, &bytes_read);
-        growbuf_append(&gb, chunk, bytes_read);
-        free(chunk);
-    }
+    GrowBuf gb     = {0};
+    char    chunk[4096];
+    DWORD   bytes_read;
+    do {
+        bytes_read = 0;
+        if (!WinHttpReadData(hRequest, chunk, sizeof(chunk), &bytes_read)) break;
+        if (bytes_read > 0) growbuf_append(&gb, chunk, bytes_read);
+    } while (bytes_read > 0);
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
@@ -307,6 +310,15 @@ static const char* NEW_WORD_GRAMMAR =
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
 
+/* Phrase grammar: keys are multi-word lowercase phrases (1+ words separated by spaces). */
+static const char* PHRASE_GRAMMAR =
+    "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
+    "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
+    "phrase      ::= word (\" \" word)*\n"
+    "word        ::= [a-z]+\n"
+    "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+    "ws          ::= [ \\t\\n]*\n";
+
 /* Continuation grammar: one-or-more syllable pairs, then the EOW pair "·" is
  * mandatory at the end.  This guarantees the model always emits an EOW
  * probability so words cannot grow without bound. */
@@ -317,30 +329,98 @@ static const char* CONTINUATION_GRAMMAR =
     "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws       ::= [ \\t\\n]*\n";
 
-static char* build_new_word_prompt(const char* ctx, int n)
+static const char* style_to_str(int style)
 {
-    char* buf = (char*)malloc(4096);
+    switch (style) {
+        case 1: return "informal mobile chat (e.g. WhatsApp or SMS)";
+        case 2: return "formal business email";
+        case 3: return "casual first-person blog post";
+        case 4: return "neutral third-person news article";
+        default: return NULL;
+    }
+}
+
+const char* llm_client_style_seed(int style)
+{
+    switch (style) {
+        case 1: return "I like";        /* INFORMAL_CHAT — next words: burgers/this/eating/good/… */
+        case 2: return "I am";          /* FORMAL_EMAIL  — next words: writing/pleased/happy/… */
+        case 3: return "I love";        /* CASUAL_BLOG   — next words: burgers/eating/how/… */
+        case 4: return "Scientists say"; /* NEWS_ARTICLE — next words: that/the/global/temperatures/… */
+        default: return NULL;
+    }
+}
+
+char* llm_client_build_preamble(int style, const char* topic)
+{
+    const char* sname = style_to_str(style);
+    if (!sname || !topic || !*topic) return NULL;
+    size_t n = strlen(topic) + strlen(sname) + 192;
+    char* buf = (char*)malloc(n);
     if (!buf) return NULL;
-    snprintf(buf, 4096,
-        "Text so far: \"%s\"\n"
-        "You are generating the next word one syllable at a time.\n"
-        "Provide the %d most natural first syllables for the next word.\n"
-        "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
-        ctx, n);
+    snprintf(buf, n,
+        "Paraphrase the sentence below as a %s.\n"
+        "Keep the same meaning but use natural vocabulary for that style.\n"
+        "Original: \"%s\"\n"
+        "---\n",
+        sname, topic);
     return buf;
 }
 
-static char* build_continuation_prompt(const char* ctx, const char* partial, int n)
+static char* build_new_word_prompt(const char* preamble, const char* ctx, int n)
 {
-    char* buf = (char*)malloc(4096);
+    size_t pre_len = preamble ? strlen(preamble) : 0;
+    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
+    size_t buf_size = pre_len + ctx_len + 256;
+    char* buf = (char*)malloc(buf_size);
     if (!buf) return NULL;
-    snprintf(buf, 4096,
-        "Text so far: \"%s\"\n"
-        "Word being built: \"%s\"\n"
-        "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
-        "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
-        "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
-        ctx, partial, n - 1, partial);
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Text so far: \"%s\"\n"
+            "You are continuing this text in the given style about the given topic.\n"
+            "Provide the %d most natural first syllables for the next word.\n"
+            "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
+            preamble, ctx, n);
+    } else {
+        snprintf(buf, buf_size,
+            "Text so far: \"%s\"\n"
+            "You are generating the next word one syllable at a time.\n"
+            "Provide the %d most natural first syllables for the next word.\n"
+            "Return ONLY a JSON object like: {\"the\": 0.4, \"in\": 0.3, \"re\": 0.2, \"pro\": 0.1} — probs sum to 1.0.",
+            ctx, n);
+    }
+    return buf;
+}
+
+static char* build_continuation_prompt(const char* preamble, const char* ctx,
+                                        const char* partial, int n)
+{
+    size_t pre_len = preamble ? strlen(preamble) : 0;
+    size_t ctx_len = ctx     ? strlen(ctx)     : 0;
+    size_t par_len = partial ? strlen(partial) : 0;
+    size_t buf_size = pre_len + ctx_len + par_len * 2 + 256;
+    char* buf = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Text so far: \"%s\"\n"
+            "Word being built: \"%s\"\n"
+            "You are continuing this text in the given style about the given topic.\n"
+            "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
+            "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
+            "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
+            preamble, ctx, partial, n - 1, partial);
+    } else {
+        snprintf(buf, buf_size,
+            "Text so far: \"%s\"\n"
+            "Word being built: \"%s\"\n"
+            "Provide %d natural continuation syllables plus \"\xc2\xb7\" (end-of-word).\n"
+            "Higher prob for \"\xc2\xb7\" if \"%s\" is already a natural word.\n"
+            "Return ONLY a JSON object like: {\"\xc2\xb7\": 0.5, \"tion\": 0.3, \"ing\": 0.2} — probs sum to 1.0.",
+            ctx, partial, n - 1, partial);
+    }
     return buf;
 }
 
@@ -376,12 +456,24 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     cJSON* item; int i = 0;
     cJSON_ArrayForEach(item, obj) {
         if (i >= n) break;
-        if (!cJSON_IsNumber(item)) { i++; continue; }
+        if (!cJSON_IsNumber(item)) continue;
         float p = (float)item->valuedouble;
         if (p < 0.0f) p = 0.0f;
-        strncpy(resp->candidates[i].text, item->string, 63);
+
+        char text[64];
+        strncpy(text, item->string, 63);
+        text[63] = '\0';
+        map_eow(text);
+
+        /* skip duplicate keys — JSON with repeated keys causes encode/decode divergence */
+        int dup = 0;
+        for (int j = 0; j < i; j++) {
+            if (strcmp(resp->candidates[j].text, text) == 0) { dup = 1; break; }
+        }
+        if (dup) continue;
+
+        strncpy(resp->candidates[i].text, text, 63);
         resp->candidates[i].text[63] = '\0';
-        map_eow(resp->candidates[i].text);
         resp->candidates[i].prob = p;
         sum += p;
         i++;
@@ -396,11 +488,273 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
     return resp;
 }
 
+static char* build_word_prompt(const char* preamble, const char* ctx, int n,
+                               const char* blacklist)
+{
+    size_t pre_len    = preamble   ? strlen(preamble)   : 0;
+    size_t ctx_len    = ctx && ctx[0] ? strlen(ctx)     : 0;
+    size_t bl_len     = blacklist && blacklist[0] ? strlen(blacklist) : 0;
+    size_t buf_size   = pre_len + ctx_len + bl_len + 640;
+    char*  buf        = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+
+    /* First step: no text generated yet; ask for a strong opening word.
+       Subsequent steps: continue the paraphrase from where it left off. */
+    const char* phase = ctx_len > 0
+        ? "Continue the paraphrase. Use specific nouns, verbs, and details from the original — do NOT use emotional adjectives like wonderful, fantastic, or craving."
+        : "Begin the paraphrase with one strong content word from the original — do NOT use emotional adjectives.";
+
+    /* blacklist clause — suppress the word used in the previous step */
+    char bl_clause[96] = {0};
+    if (bl_len > 0)
+        snprintf(bl_clause, sizeof(bl_clause),
+                 "\nDo NOT repeat \"%s\" (just used).", blacklist);
+
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "%s%s\n"
+            "Paraphrase so far: \"%s\"\n"
+            "Provide the %d most probable next words.\n"
+            "Return ONLY a JSON object like: {\"enjoying\": 0.4, \"craving\": 0.3, \"fantastic\": 0.2, \"wonderful\": 0.1} — probs sum to 1.0.",
+            preamble, phase, bl_clause, ctx ? ctx : "", n);
+    } else {
+        snprintf(buf, buf_size,
+            "Write a natural sentence. Sentence so far: \"%s\"\n"
+            "%s%s\n"
+            "Provide the %d most probable next words.\n"
+            "Return ONLY a JSON object — probs sum to 1.0.",
+            ctx ? ctx : "", phase, bl_clause, n);
+    }
+    return buf;
+}
+
+/* Per-question continuation instructions, indexed by StyleQuestion.
+   Only used when ctx_len > 0 (see phase selection below) — each narrows
+   the candidates to one concrete axis of variation instead of an
+   open-ended "continue naturally". The opening connector named here is
+   no longer just a hint: build_phrase_grammar() below forces every
+   candidate's phrase to start with one of these exact words via GBNF, so
+   the wording states it as a requirement rather than "typically" — the
+   model has no way to produce a bare new-verb clause instead. */
+static const char* STYLE_QUESTION_PHASE[STYLE_Q_COUNT] = {
+    /* STYLE_Q_HOW */
+    "Continue the sentence above by answering HOW the subject does this — "
+    "the method, tool, or manner involved. Every candidate MUST open with "
+    "\"by\", \"through\", or \"using\", followed by its next 1-4 words "
+    "(\"by turning the key\"). Agree in tense and subject with the text "
+    "that precedes it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHERE */
+    "Continue the sentence above by answering WHERE this is happening — a "
+    "destination, origin, or place. Every candidate MUST open with \"to\", "
+    "\"toward\", \"from\", or \"at\", followed by its next 1-4 words "
+    "(\"to the office\"). Agree in tense and subject with the text that "
+    "precedes it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHO_MEET */
+    "Continue the sentence above by answering WHO the subject intends to "
+    "meet, involve, or work with as part of this. Every candidate MUST "
+    "open with \"to meet\", \"to join\", or \"with\", followed by its next "
+    "1-4 words naming a person or group (\"to meet the manager\"). Agree "
+    "in tense and subject with the text that precedes it — do NOT switch "
+    "subject or start a new sentence.",
+
+    /* STYLE_Q_WHO_AVOID */
+    "Continue the sentence above by answering WHO or WHAT the subject "
+    "wants to avoid, delay, or steer clear of while doing this. Every "
+    "candidate MUST open with \"to avoid\", \"before\", or \"while "
+    "avoiding\", followed by its next 1-4 words (\"to avoid the "
+    "traffic\"). Agree in tense and subject with the text that precedes "
+    "it — do NOT switch subject or start a new sentence.",
+
+    /* STYLE_Q_WHY */
+    "Continue the sentence above by answering WHY the subject is doing "
+    "this — the reason or goal behind it. Every candidate MUST open with "
+    "\"to\", \"in order to\", or \"because\", followed by its next 1-4 "
+    "words (\"to make it to the meeting\"). Agree in tense and subject "
+    "with the text that precedes it — do NOT switch subject or start a "
+    "new sentence.",
+};
+
+/* Connector alternatives per question, as GBNF string-literal alternation
+   bodies (each entry is valid inside a "(...)" grammar group). Must stay
+   in sync word-for-word with the connectors named in STYLE_QUESTION_PHASE
+   above, or the prompt will describe options the grammar doesn't allow. */
+static const char* STYLE_QUESTION_CONNECTOR_GRAMMAR[STYLE_Q_COUNT] = {
+    /* STYLE_Q_HOW       */ "\"by\" | \"through\" | \"using\"",
+    /* STYLE_Q_WHERE     */ "\"to\" | \"toward\" | \"from\" | \"at\"",
+    /* STYLE_Q_WHO_MEET  */ "\"to meet\" | \"to join\" | \"with\"",
+    /* STYLE_Q_WHO_AVOID */ "\"to avoid\" | \"before\" | \"while avoiding\"",
+    /* STYLE_Q_WHY       */ "\"to\" | \"in order to\" | \"because\"",
+};
+
+/* Continuation-step grammar: same JSON shape as PHRASE_GRAMMAR, but each
+   phrase is forced to start with one of the question's connector words
+   (see STYLE_QUESTION_CONNECTOR_GRAMMAR), guaranteeing every candidate —
+   not just "roughly half" — reads as a subordinate clause glued onto the
+   sentence so far, instead of a bare new finite-verb clause. Caller frees
+   with free(). Returns NULL on OOM. */
+static char* build_phrase_grammar(StyleQuestion question)
+{
+    const char* connectors = STYLE_QUESTION_CONNECTOR_GRAMMAR[question];
+    size_t buf_size = strlen(connectors) + 384;
+    char*  buf      = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    snprintf(buf, buf_size,
+        "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
+        "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
+        "phrase      ::= connector (\" \" word)+\n"
+        "connector   ::= %s\n"
+        "word        ::= [a-z]+\n"
+        "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+        "ws          ::= [ \\t\\n]*\n",
+        connectors);
+    return buf;
+}
+
+static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
+                                  const char* blacklist_phrases,
+                                  const char* blacklist_words,
+                                  const char* subject_anchor,
+                                  StyleQuestion question)
+{
+    size_t pre_len  = preamble         ? strlen(preamble)         : 0;
+    size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
+    size_t bl_len   = blacklist_phrases && blacklist_phrases[0]
+                      ? strlen(blacklist_phrases) : 0;
+    size_t bw_len   = blacklist_words && blacklist_words[0]
+                      ? strlen(blacklist_words) : 0;
+    size_t sa_len   = subject_anchor && subject_anchor[0]
+                      ? strlen(subject_anchor) : 0;
+    /* 2048 covers the fixed wrapper/instruction text (phase + subj/bl/bw
+       clause wording + JSON-format example) with headroom — measured at
+       ~1150 bytes as of the subject-anchor + word-blacklist prompt. A
+       flat 1024 was undersized here and silently truncated the trailing
+       "Return ONLY a JSON object..." format example via snprintf, which
+       correlated with a spike in the model failing to return parseable
+       JSON (falling back to the hardcoded FALLBACK_PHRASES table). */
+    size_t buf_size = pre_len + ctx_len + bl_len + bw_len + sa_len + 2048;
+    char*  buf      = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+
+    /* Opening step of a sentence (subject_anchor empty — either the very
+       first phrase of the covertext, or the first phrase after a clause
+       ended and reset the anchor): every candidate MUST open with an
+       explicit subject so later steps have a grammatical anchor to agree
+       with (a bare verb-phrase/prepositional opener has nothing to agree
+       with, which is what caused subject-less fragments in practice).
+       Continuation step (subject_anchor set): must grammatically continue
+       the current sentence (same subject, same tense, no restart). Keyed
+       off sa_len rather than ctx_len so a second sentence mid-covertext
+       also gets opening-step treatment, not just the very first phrase. */
+    const char* phase = sa_len > 0
+        ? STYLE_QUESTION_PHASE[question]
+        : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
+          "start with an explicit subject — a pronoun (he/she/they/it) or a noun "
+          "phrase (\"the team\", \"the government\") — immediately followed by its "
+          "verb. Do NOT start with a preposition, a bare verb, or a dangling "
+          "phrase with no subject.";
+
+    char bl_clause[640] = {0};
+    if (bl_len > 0)
+        snprintf(bl_clause, sizeof(bl_clause),
+                 "\nDo NOT repeat any of these already-used phrases: %s.",
+                 blacklist_phrases);
+
+    /* Word-level blacklist catches repetition the phrase-level blacklist
+       misses: a candidate can dodge the exact-phrase check while still
+       reusing an individual content word from an earlier phrase (e.g.
+       "rides smoothly" then "smoothly continues" a few steps later). */
+    char bw_clause[640] = {0};
+    if (bw_len > 0)
+        snprintf(bw_clause, sizeof(bw_clause),
+                 "\nAlso avoid reusing these specific words in any candidate, "
+                 "even inside an otherwise new phrase: %s.",
+                 blacklist_words);
+
+    /* Naming the exact subject text (rather than just saying "don't switch
+       subjects") gives the model a concrete anchor instead of an abstract
+       rule — bit-driven slot selection can still land on a candidate that
+       drops the subject if the rule is vague, since selection is not
+       quality-ranked. */
+    char subj_clause[320] = {0};
+    if (sa_len > 0)
+        snprintf(subj_clause, sizeof(subj_clause),
+                 "\nThe sentence's subject was established by its opening: \"%s\". "
+                 "Every candidate MUST remain about that exact subject — do not "
+                 "switch to a different person/thing, and do not drop the subject.",
+                 subject_anchor);
+
+    if (preamble) {
+        snprintf(buf, buf_size,
+            "%s"
+            "Sentence so far: \"%s\"\n"
+            "%s%s%s%s\n"
+            "Provide %d different natural continuations with probabilities.\n"
+            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives\": 0.3, \"takes the bus every day\": 0.2, \"commutes early\": 0.1} — probs sum to 1.0.",
+            preamble, ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+    } else {
+        snprintf(buf, buf_size,
+            "Sentence so far: \"%s\"\n"
+            "%s%s%s%s\n"
+            "Provide %d different natural continuations with probabilities.\n"
+            "Return ONLY a JSON object — probs sum to 1.0.",
+            ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+    }
+    return buf;
+}
+
 static const char* FALLBACK_SYLLABLES[] = {
     "the", "in", "a", "re", "pro", "con", "de", "ex", "un", "be",
     "per", "dis", "over", "out", "sub", "pre", "inter", "mis", "non", "bi"
 };
 #define FALLBACK_SYLLABLES_COUNT 20
+
+static const char* FALLBACK_WORDS[] = {
+    "the", "is", "a", "and", "of", "it", "to", "in", "that", "have",
+    "for", "on", "are", "with", "as", "at", "be", "this", "was", "but"
+};
+#define FALLBACK_WORDS_COUNT 20
+
+static const char* FALLBACK_PHRASES[] = {
+    "and the world",   "in the morning",  "at the office",  "on the street",
+    "to the market",   "by the river",    "with the team",  "from the start",
+    "for the cause",   "of the year",     "under the sky",  "over the hill",
+    "into the night",  "through the day", "around the town", "before the dawn",
+    "after the rain",  "among the trees", "beside the road", "along the way"
+};
+#define FALLBACK_PHRASES_COUNT 20
+
+static LLMResponse* uniform_phrase_fallback(int n)
+{
+    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
+    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
+    resp->count       = n;
+    float p = 1.0f / (float)n;
+    for (int i = 0; i < n; i++) {
+        strncpy(resp->candidates[i].text,
+                FALLBACK_PHRASES[i % FALLBACK_PHRASES_COUNT], 63);
+        resp->candidates[i].text[63] = '\0';
+        resp->candidates[i].prob = p;
+    }
+    return resp;
+}
+
+static LLMResponse* uniform_word_fallback(int n)
+{
+    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
+    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
+    resp->count       = n;
+    float p = 1.0f / (float)n;
+    for (int i = 0; i < n; i++) {
+        strncpy(resp->candidates[i].text,
+                FALLBACK_WORDS[i % FALLBACK_WORDS_COUNT], 63);
+        resp->candidates[i].text[63] = '\0';
+        resp->candidates[i].prob = p;
+    }
+    return resp;
+}
 
 static LLMResponse* uniform_fallback(int n)
 {
@@ -420,13 +774,14 @@ static LLMResponse* uniform_fallback(int n)
 /* ── public API ─────────────────────────────────────────────────────────── */
 
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
+                                           const char* preamble,
                                            const char* full_context,
                                            const char* partial_word,
                                            int         is_new_word)
 {
     char* prompt = is_new_word
-        ? build_new_word_prompt(full_context, client->max_candidates)
-        : build_continuation_prompt(full_context, partial_word, client->max_candidates);
+        ? build_new_word_prompt(preamble, full_context, client->max_candidates)
+        : build_continuation_prompt(preamble, full_context, partial_word, client->max_candidates);
     if (!prompt) return NULL;
 
     cJSON* req = cJSON_CreateObject();
@@ -452,6 +807,96 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
         return uniform_fallback(client->max_candidates);
+    }
+    return resp;
+}
+
+LLMResponse* llm_client_get_word_dist(LLMClient*  client,
+                                       const char* preamble,
+                                       const char* full_context,
+                                       const char* blacklist_word)
+{
+    char* prompt = build_word_prompt(preamble, full_context, client->max_candidates,
+                                     blacklist_word);
+    if (!prompt) return NULL;
+
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt",      prompt);
+    cJSON_AddStringToObject(req, "grammar",     NEW_WORD_GRAMMAR);
+    cJSON_AddNumberToObject(req, "n_predict",   96);
+    cJSON_AddNumberToObject(req, "temperature", 0.0);
+    cJSON_AddNumberToObject(req, "seed",        42);
+    cJSON_AddBoolToObject  (req, "stream",      0);
+    char* body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    free(prompt);
+    if (!body) return NULL;
+
+    char* raw = HTTP_POST(client, "/completion", body);
+    free(body);
+
+    if (!raw) return uniform_word_fallback(client->max_candidates);
+
+    LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
+    free(raw);
+
+    if (!resp || resp->count == 0) {
+        llm_response_free(resp);
+        return uniform_word_fallback(client->max_candidates);
+    }
+    return resp;
+}
+
+LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
+                                          const char* preamble,
+                                          const char* full_context,
+                                          const char* blacklist_phrases,
+                                          const char* blacklist_words,
+                                          const char* subject_anchor,
+                                          StyleQuestion question)
+{
+    char* prompt = build_phrase_prompt(preamble, full_context,
+                                       client->max_candidates, blacklist_phrases,
+                                       blacklist_words, subject_anchor, question);
+    if (!prompt) return NULL;
+
+    /* Opening step of a sentence (subject_anchor empty) keeps the
+       free-form grammar — it doesn't use `question` (see
+       build_phrase_prompt). Continuation steps get a per-question
+       grammar that forces the connector, must be freed; the opening
+       step's grammar is a string literal and must NOT be freed. Keyed
+       off subject_anchor, matching build_phrase_prompt's phase
+       selection — NOT full_context, which stays non-empty across
+       sentence boundaries. */
+    int   is_continuation = subject_anchor && subject_anchor[0];
+    char* dyn_grammar      = is_continuation ? build_phrase_grammar(question) : NULL;
+    if (is_continuation && !dyn_grammar) { free(prompt); return NULL; }
+    const char* grammar = is_continuation ? dyn_grammar : PHRASE_GRAMMAR;
+
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt",      prompt);
+    cJSON_AddStringToObject(req, "grammar",     grammar);
+    cJSON_AddNumberToObject(req, "n_predict",   256);
+    cJSON_AddNumberToObject(req, "temperature", 0.0);
+    cJSON_AddNumberToObject(req, "seed",        42);
+    cJSON_AddBoolToObject  (req, "stream",      0);
+    char* body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    free(prompt);
+    free(dyn_grammar);
+    if (!body) return NULL;
+
+    char* raw = HTTP_POST(client, "/completion", body);
+    free(body);
+
+    if (!raw) return uniform_phrase_fallback(client->max_candidates);
+
+    LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
+    free(raw);
+
+    if (!resp || resp->count == 0) {
+        llm_response_free(resp);
+        return uniform_phrase_fallback(client->max_candidates);
     }
     return resp;
 }

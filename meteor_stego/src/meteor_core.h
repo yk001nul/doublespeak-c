@@ -63,3 +63,96 @@ int meteor_decode_step(const char*       chosen_syllable,
                        MeteorPRNG*       prng,
                        int               beta,
                        uint8_t*          out_bits);
+
+/*
+ * Rolling content-word history for phrase-level repetition avoidance.
+ * Tracks up to CONTENT_WORD_HISTORY distinct non-stopword tokens seen
+ * across recently chosen phrases (oldest evicted first). Shared between
+ * encode.c and decode.c so both sides build a byte-identical blacklist —
+ * any divergence here would corrupt the LLM prompt and desync decoding.
+ */
+#define CONTENT_WORD_HISTORY 8
+#define CONTENT_WORD_MAXLEN  24
+
+typedef struct {
+    char words[CONTENT_WORD_HISTORY][CONTENT_WORD_MAXLEN];
+    int  count;
+} MeteorWordHistory;
+
+/* Tokenizes phrase on spaces and adds each non-stopword, non-duplicate
+ * token (length in [3, CONTENT_WORD_MAXLEN)) to the rolling history. */
+void meteor_word_history_add(MeteorWordHistory* hist, const char* phrase);
+
+/* Writes a comma-joined blacklist string into out (size out_size).
+ * Writes "" if hist is empty. */
+void meteor_word_history_join(const MeteorWordHistory* hist,
+                               char* out, size_t out_size);
+
+/*
+ * Per-step "question" that steers what a continuation phrase answers
+ * (method / destination / person met / person avoided / motivation),
+ * used in place of an open-ended "continue naturally" instruction to
+ * give the LLM's candidates a concrete, narrow axis of variation.
+ * Not used for the opening step of a sentence (no continuation yet).
+ */
+typedef enum {
+    STYLE_Q_HOW = 0,      /* method / means / manner */
+    STYLE_Q_WHERE,         /* destination / origin / location */
+    STYLE_Q_WHO_MEET,      /* person/group to meet or involve */
+    STYLE_Q_WHO_AVOID,     /* person/thing to avoid or evade */
+    STYLE_Q_WHY,           /* motivation / purpose / reason */
+    STYLE_Q_COUNT
+} StyleQuestion;
+
+/*
+ * Rolling history of recently-drawn questions, used only to bias the
+ * redraw in meteor_draw_style_question() away from immediate repeats.
+ * Shared between encode.c and decode.c for the same determinism reason
+ * as MeteorWordHistory: both sides must draw/redraw identically or the
+ * PRNG streams desync.
+ */
+#define STYLE_Q_HISTORY     1  /* forbid repeating the immediately-previous question */
+#define STYLE_Q_MAX_REDRAWS 4  /* deterministic cap; a redraw loop always terminates */
+
+typedef struct {
+    StyleQuestion recent[STYLE_Q_HISTORY];
+    int           count;
+} StyleQuestionHistory;
+
+/*
+ * Draw the next question from prng (3 bits, mod STYLE_Q_COUNT), redrawing
+ * up to STYLE_Q_MAX_REDRAWS times if it collides with hist. Must be called
+ * exactly once per loop iteration, at the same point relative to the
+ * existing beta-bit slot-selection draw, on both the encode and decode
+ * side — see the PRNG lockstep note in ARCHITECTURE.md §6.
+ */
+StyleQuestion meteor_draw_style_question(MeteorPRNG* prng,
+                                          const StyleQuestionHistory* hist);
+
+/* Pushes q into hist's rolling window (evicting the oldest if full). */
+void meteor_style_question_history_push(StyleQuestionHistory* hist, StyleQuestion q);
+
+/*
+ * Per-step decision of whether to end the current sentence (append "."
+ * and start a fresh one) instead of continuing it. Independent PRNG draw
+ * from StyleQuestion, taken at the same relative point in the loop on
+ * both encode.c and decode.c. See meteor_draw_clause_end() for the
+ * min/max phrase-per-sentence bounds.
+ */
+#define CLAUSE_END_MIN_PHRASES 2  /* never end right after the opener alone */
+#define CLAUSE_END_MAX_PHRASES 6  /* force an end so run-ons stay bounded */
+#define CLAUSE_END_DRAW_BITS   3  /* v==0 out of 8 possible values ⇒ ~1/8 chance/step */
+
+typedef struct {
+    int phrases_in_sentence;
+} ClauseState;
+
+/*
+ * Decide whether the phrase about to be generated should be the last one
+ * in the current sentence. Always draws from prng (even when the min/max
+ * bound forces the outcome), so PRNG stream position stays identical
+ * between encode and decode regardless of sentence length. Call once per
+ * step, after meteor_draw_style_question(), before the beta-bit slot
+ * draw inside meteor_encode_step()/meteor_decode_step().
+ */
+int meteor_draw_clause_end(MeteorPRNG* prng, const ClauseState* state);

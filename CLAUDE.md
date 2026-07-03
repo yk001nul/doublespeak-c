@@ -150,6 +150,25 @@ Public API is in `include/meteor.h`. FFI bindings (Python ctypes, C# P/Invoke) l
 
 **Decoder prefix-matching:** The syllabifier cannot reconstruct the encoder's syllable sequence for artificially concatenated words (e.g. `"resreinin..."` — heuristic VC|CV splits differ from the encoder's actual LLM choices). Instead, the decoder iterates each covertext word character by character, querying the LLM with the same context/partial as the encoder, and picks the longest candidate that is a prefix of the remaining text. After all syllables of a word are consumed, one EOW synthesis step is run to keep the PRNG in sync — unless the null terminator was already found mid-word (in which case EOW synthesis is skipped, matching the encoder which also had no EOW for the last partial word).
 
+### Style mode (phrase-level paraphrase encoding, `imp/topic-gen` branch)
+
+Style mode (`MeteorConfig.style`, one of `MeteorStyle`) replaces syllable-level word building with phrase-level paraphrase encoding: each step picks one of `num_candidates` LLM-generated 3-6 word phrases (`beta=3` / 8 candidates fills all slots exactly, 3 bits/step) and appends it to a growing sentence, instead of building words syllable-by-syllable. Same lockstep-PRNG invariant as syllable mode applies — encode.c and decode.c must draw from the PRNG in the exact same order every step, regardless of branch outcomes, or the streams desync with no error signal.
+
+Per-step PRNG draws, in fixed order:
+1. `meteor_draw_style_question()` — picks one of 5 `StyleQuestion` axes (HOW/WHERE/WHO_MEET/WHO_AVOID/WHY) that all 8 candidates for this step answer, giving them a shared semantic axis instead of open-ended "continue naturally" (which produced low-quality filler candidates). Grammar-hardened via `build_phrase_grammar` in `llm_client.c` so each candidate's connector (e.g. "by ...", "to ...") is enforced by GBNF, not just prompted.
+2. `meteor_draw_clause_end()` — decides whether the phrase about to be generated ends the current sentence (append a literal `.`, reset `subject_anchor`, start fresh). Forced to continue below `CLAUSE_END_MIN_PHRASES=2` and forced to end at `CLAUSE_END_MAX_PHRASES=6`, but the PRNG bits are always drawn regardless of which bound fires, to keep stream position identical between encode/decode.
+3. The beta-bit slot-selection draw inside `meteor_encode_step`/decode's mirror, same as syllable mode.
+
+Both draws happen unconditionally every step, including the very first phrase of the covertext (where the question draw is unused) — this is required so PRNG position never depends on data-dependent branches.
+
+**Subject anchor:** the first phrase of each sentence (`subject_anchor[0]=='\0'` on entry) is prompted to open with an explicit subject (pronoun or noun phrase), and that subject is repeated verbatim in every later phrase-dist prompt for the rest of the sentence to keep person/tense consistent. `subject_anchor` (not `ctx_len`/`full_context`) is what `build_phrase_prompt` and `llm_client_get_phrase_dist` key off to decide opening-step vs. continuation-step grammar — `full_context` stays non-empty across sentence boundaries, so it can't be used to detect "first phrase of *this* sentence."
+
+**Anti-repetition:** `MeteorWordHistory` (shared helper in `meteor_core.c/.h`, used identically by encode.c and decode.c so both sides build byte-identical prompts) blacklists the last 8 non-stopword tokens; `PHRASE_HISTORY` blacklists the last 6 whole phrases. Neither resets at sentence boundaries — repeats are suppressed across the entire message, not just within one sentence.
+
+**Decoder note:** the literal `.` inserted at a clause end has no space before it in the covertext and isn't part of any LLM candidate's text, so decode.c must consume it explicitly (`if (*remaining == '.') remaining++`) right after matching the phrase that preceded it, before resuming its normal space-skip.
+
+**Status:** roundtrip-verified (28/28 phrase-level, then reconfirmed with the clause-end draw added) with Phi-3.5-mini, `--threads 1 --temp 0.0 --seed 42`, via `styled_encode` ctest. Not yet merged to `main`. Known remaining rough edge: a new sentence can open with a bare verb ("starts his car...") instead of an explicit subject if the model doesn't follow the opening-step subject instruction, worth revisiting before merge.
+
 ## Dependencies
 
 | Dependency | Windows | Linux/macOS |

@@ -12,6 +12,24 @@ extern "C" {
 
 typedef struct MeteorCtx MeteorCtx;
 
+/* ── Embellishment style ─────────────────────────────────────────────────── */
+
+/*
+ * Controls how the LLM frames the generated covertext.
+ * METEOR_STYLE_NONE (0) = legacy mode: starting_context appears verbatim at
+ *   the start of the covertext and the LLM continues it neutrally.
+ * Any other value = embellishment mode: starting_context is used as a topic
+ *   source (injected into the LLM prompt but NOT written to the covertext).
+ *   The covertext is generated fresh in the chosen style.
+ */
+typedef enum {
+    METEOR_STYLE_NONE = 0,
+    METEOR_STYLE_INFORMAL_CHAT,   /* casual instant / mobile messaging */
+    METEOR_STYLE_FORMAL_EMAIL,    /* professional business email prose */
+    METEOR_STYLE_CASUAL_BLOG,     /* relaxed first-person blog writing */
+    METEOR_STYLE_NEWS_ARTICLE,    /* neutral third-person news prose */
+} MeteorStyle;
+
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -37,6 +55,8 @@ typedef struct {
     const char* hyphen_dict;     /* path to hyph_en_US.dic (NULL = use heuristic) */
     int         max_steps;       /* max syllable steps before giving up (default 256) */
     int         llm_timeout_ms;  /* HTTP timeout per LLM call (default 30000) */
+
+    MeteorStyle style;           /* embellishment style (default METEOR_STYLE_NONE) */
 } MeteorConfig;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
@@ -48,8 +68,13 @@ void       meteor_destroy(MeteorCtx* ctx);
 
 /*
  * Encodes message into covertext.
- * starting_context: plain text that both sender and receiver already share
- *                   (e.g. "Researchers announced"). Acts as LLM prompt seed.
+ * starting_context:
+ *   METEOR_STYLE_NONE — plain text prepended verbatim to the covertext and
+ *     used as the LLM seed (e.g. "Researchers announced").
+ *   Any other style   — topic/idea source injected into the LLM prompt but
+ *     NOT written to the covertext; the output is generated fresh in the
+ *     configured style (e.g. "i like burger. burger good.").
+ *   Both sides must supply the identical starting_context.
  * Returns heap-allocated null-terminated covertext string on success, NULL on error.
  * Caller must call meteor_free() on the returned pointer.
  */
@@ -88,6 +113,43 @@ int meteor_llm_health(MeteorCtx* ctx);
 
 /* Free any pointer returned by this library. */
 void meteor_free(void* ptr);
+
+/* ── Capacity estimation ──────────────────────────────────────────────────── */
+
+/*
+ * Result of meteor_estimate_capacity().
+ * All fields are 0 on error.
+ */
+typedef struct {
+    int   estimated_bits;       /* total bits that can be embedded */
+    int   estimated_bytes;      /* estimated_bits / 8 */
+    int   estimated_words;      /* expected paraphrase length in words */
+    float avg_bits_per_word;    /* average bits encoded per word step */
+    int   sample_steps_used;    /* 0 = heuristic; >0 = LLM samples taken */
+} MeteorCapacityEstimate;
+
+/*
+ * Estimate how many bits can be embedded when using `context` as the
+ * paraphrase source in style mode.
+ *
+ * sample_steps = 0 : fast heuristic — no LLM calls, returns in microseconds.
+ *                    Uses a conservative 65 % of the theoretical maximum.
+ * sample_steps > 0 : accurate — makes this many LLM calls to measure the
+ *                    actual average bits-per-step for the given context and
+ *                    style.  Requires the LLM server to be running.
+ *
+ * Returns METEOR_OK on success, or METEOR_ERR_CONFIG if ctx / context / out
+ * are NULL or context is empty.
+ *
+ * Typical use — check before encoding:
+ *   MeteorCapacityEstimate est;
+ *   meteor_estimate_capacity(ctx, topic, 0, &est);
+ *   if (est.estimated_bytes < msg_len) { ... too long ... }
+ */
+int meteor_estimate_capacity(MeteorCtx*              ctx,
+                             const char*             context,
+                             int                     sample_steps,
+                             MeteorCapacityEstimate* out);
 
 /* ── Error codes ─────────────────────────────────────────────────────────── */
 

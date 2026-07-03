@@ -1,5 +1,6 @@
 #pragma once
 
+#include "meteor_core.h"
 #include <stddef.h>
 
 typedef struct {
@@ -23,9 +24,29 @@ LLMClient*   llm_client_create(const char* base_url, int max_candidates, int tim
 void         llm_client_destroy(LLMClient* client);
 
 /*
+ * Build an embellishment preamble string from a style id and topic text.
+ * style   : MeteorStyle cast to int; pass 0 (METEOR_STYLE_NONE) to get NULL.
+ * topic   : the starting_context string repurposed as topic source.
+ * Returns a heap-allocated string the caller must free(), or NULL if style==0
+ * or on OOM.  The returned string is prepended to every LLM prompt.
+ */
+char* llm_client_build_preamble(int style, const char* topic);
+
+/*
+ * Return a fixed sentence-seed string for the given style (e.g. "I" for chat,
+ * "Scientists" for news).  The encoder prepends this to full_text before the
+ * first Meteor step so distributions are conditioned on a natural sentence
+ * start.  The decoder skips the seed words in the covertext.
+ * Returns NULL for METEOR_STYLE_NONE.  The returned pointer is a string literal
+ * — do NOT free() it.
+ */
+const char* llm_client_style_seed(int style);
+
+/*
  * Get syllable distribution for one Meteor step.
- * full_context   : entire generated text so far (used as prompt)
- * partial_word   : syllables built for the current word so far (empty string if is_new_word)
+ * preamble       : style/topic prefix from llm_client_build_preamble(), or NULL
+ * full_context   : generated text so far (not including preamble)
+ * partial_word   : syllables built for the current word so far (empty if is_new_word)
  * is_new_word    : 1 = first syllable of a new word, 0 = continuation / EOW step
  *
  * Returns NULL on unrecoverable failure (caller treats it as METEOR_ERR_LLM).
@@ -33,9 +54,56 @@ void         llm_client_destroy(LLMClient* client);
  * Caller frees with llm_response_free().
  */
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
+                                           const char* preamble,
                                            const char* full_context,
                                            const char* partial_word,
                                            int         is_new_word);
+
+/*
+ * Get a distribution over whole words for the word-level Meteor step.
+ * Used in embellishment (style) mode instead of syllable-level sampling.
+ * preamble: style/topic prefix from llm_client_build_preamble(), or NULL.
+ * full_context: generated text so far.
+ * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ */
+/*
+ * blacklist_word: word chosen in the previous step; the LLM is asked not to
+ * suggest it again, breaking single-word fixation at temp=0.  Pass NULL on
+ * the first step.
+ */
+LLMResponse* llm_client_get_word_dist(LLMClient*  client,
+                                       const char* preamble,
+                                       const char* full_context,
+                                       const char* blacklist_word);
+
+/*
+ * Get a distribution over multi-word phrases for one Meteor step (style mode).
+ * Returns N phrase candidates (e.g. "drives to work", "takes the bus") with
+ * probabilities.  The grammar forces lowercase-only multi-word keys.
+ * preamble: style/topic preamble from llm_client_build_preamble(), or NULL.
+ * full_context: covertext generated so far.
+ * blacklist_phrases: comma-separated phrases chosen in recent prior steps;
+ *   suppress repeating any of them. NULL/empty on the first step.
+ * blacklist_words: comma-separated individual content words (nouns/verbs/
+ *   adjectives) drawn from recently chosen phrases; suppress reusing any of
+ *   them even inside a new, otherwise-unseen phrase. NULL/empty on the
+ *   first step. See meteor_word_history_add()/_join() in meteor_core.h.
+ * subject_anchor: the first chosen phrase (which is forced to open with an
+ *   explicit subject), named verbatim in the prompt so every later step has
+ *   a concrete subject to stay consistent with. NULL on the first step.
+ * question: which question (STYLE_Q_HOW/WHERE/WHO_MEET/WHO_AVOID/WHY) the
+ *   continuation should answer, drawn via meteor_draw_style_question().
+ *   Ignored when full_context is empty (opening step uses its own
+ *   subject-establishing instruction instead).
+ * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ */
+LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
+                                          const char* preamble,
+                                          const char* full_context,
+                                          const char* blacklist_phrases,
+                                          const char* blacklist_words,
+                                          const char* subject_anchor,
+                                          StyleQuestion question);
 
 void llm_response_free(LLMResponse* resp);
 
