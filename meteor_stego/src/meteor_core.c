@@ -295,3 +295,14 @@ void meteor_style_question_history_push(StyleQuestionHistory* hist, StyleQuestio
         hist->recent[STYLE_Q_HISTORY - 1] = q;
     }
 }
+
+/* ── clause-ending selection ─────────────────────────────────────────────── */
+
+int meteor_draw_clause_end(MeteorPRNG* prng, const ClauseState* state)
+{
+    uint32_t v = prng_next_bits(prng, CLAUSE_END_DRAW_BITS); /* always drawn */
+
+    if (state->phrases_in_sentence + 1 < CLAUSE_END_MIN_PHRASES) return 0;
+    if (state->phrases_in_sentence + 1 >= CLAUSE_END_MAX_PHRASES) return 1;
+    return v == 0;
+}

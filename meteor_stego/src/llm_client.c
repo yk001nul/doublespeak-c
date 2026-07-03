@@ -638,13 +638,17 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
     char*  buf      = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
-    /* First step: no text generated yet — every candidate MUST open with an
+    /* Opening step of a sentence (subject_anchor empty — either the very
+       first phrase of the covertext, or the first phrase after a clause
+       ended and reset the anchor): every candidate MUST open with an
        explicit subject so later steps have a grammatical anchor to agree
        with (a bare verb-phrase/prepositional opener has nothing to agree
        with, which is what caused subject-less fragments in practice).
-       Subsequent steps: must grammatically continue the exact sentence
-       built so far (same subject, same tense, no restart). */
-    const char* phase = ctx_len > 0
+       Continuation step (subject_anchor set): must grammatically continue
+       the current sentence (same subject, same tense, no restart). Keyed
+       off sa_len rather than ctx_len so a second sentence mid-covertext
+       also gets opening-step treatment, not just the very first phrase. */
+    const char* phase = sa_len > 0
         ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
           "start with an explicit subject — a pronoun (he/she/they/it) or a noun "
@@ -856,12 +860,15 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                        blacklist_words, subject_anchor, question);
     if (!prompt) return NULL;
 
-    /* Opening step (no full_context yet) keeps the free-form grammar —
-       it doesn't use `question` (see build_phrase_prompt). Continuation
-       steps get a per-question grammar that forces the connector, must
-       be freed; the opening step's grammar is a string literal and must
-       NOT be freed. */
-    int   is_continuation = full_context && full_context[0];
+    /* Opening step of a sentence (subject_anchor empty) keeps the
+       free-form grammar — it doesn't use `question` (see
+       build_phrase_prompt). Continuation steps get a per-question
+       grammar that forces the connector, must be freed; the opening
+       step's grammar is a string literal and must NOT be freed. Keyed
+       off subject_anchor, matching build_phrase_prompt's phase
+       selection — NOT full_context, which stays non-empty across
+       sentence boundaries. */
+    int   is_continuation = subject_anchor && subject_anchor[0];
     char* dyn_grammar      = is_continuation ? build_phrase_grammar(question) : NULL;
     if (is_continuation && !dyn_grammar) { free(prompt); return NULL; }
     const char* grammar = is_continuation ? dyn_grammar : PHRASE_GRAMMAR;

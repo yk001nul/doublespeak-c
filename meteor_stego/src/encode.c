@@ -79,6 +79,7 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         char subject_anchor[64] = {0};
         MeteorWordHistory content_hist = {0};
         StyleQuestionHistory q_hist = {0};
+        ClauseState clause_state = {0};
         while (bit_offset < total_bits && steps < ctx->max_steps) {
             /* Drawn every iteration (even the opening step, which doesn't
                use it) so the PRNG stream advances identically regardless
@@ -86,6 +87,10 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
                meteor_core.h for the lockstep requirement with decode.c. */
             StyleQuestion question = meteor_draw_style_question(&prng, &q_hist);
             meteor_style_question_history_push(&q_hist, question);
+
+            /* Also drawn every iteration for the same lockstep reason —
+               see meteor_draw_clause_end() in meteor_core.h. */
+            int end_clause = meteor_draw_clause_end(&prng, &clause_state);
 
             char blacklist_buf[512] = {0};
             size_t bl_off = 0;
@@ -158,6 +163,43 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
             if (ft_len > 0) full_text[ft_len++] = ' ';
             memcpy(full_text + ft_len, step.chosen, plen);
             full_text[ft_len + plen] = '\0';
+
+            clause_state.phrases_in_sentence++;
+            if (end_clause) {
+                size_t c_ft_len = strlen(full_text);
+                size_t c_needed = c_ft_len + 2;
+                if (c_needed > buf_cap) {
+                    buf_cap = c_needed * 2;
+                    char* tmp = (char*)realloc(full_text, buf_cap);
+                    if (!tmp) { *out_error = METEOR_ERR_OOM; free(full_text); full_text = NULL; break; }
+                    full_text = tmp;
+                }
+                full_text[c_ft_len]     = '.';
+                full_text[c_ft_len + 1] = '\0';
+                subject_anchor[0] = '\0';
+                clause_state.phrases_in_sentence = 0;
+            }
+        }
+        /* Force a closing period if the loop ended mid-sentence (the last
+           clause-end draw said "continue"). Deterministic — no PRNG bits
+           needed — so decode does not need to mirror this: decode stops
+           consuming the covertext the moment it recovers the null
+           terminator and never looks at whatever trailing text follows. */
+        if (*out_error == METEOR_OK && full_text) {
+            size_t f_len = strlen(full_text);
+            if (f_len > 0 && full_text[f_len - 1] != '.') {
+                size_t needed = f_len + 2;
+                if (needed > buf_cap) {
+                    buf_cap = needed * 2;
+                    char* tmp = (char*)realloc(full_text, buf_cap);
+                    if (tmp) full_text = tmp;
+                    else { *out_error = METEOR_ERR_OOM; free(full_text); full_text = NULL; }
+                }
+                if (full_text) {
+                    full_text[f_len]     = '.';
+                    full_text[f_len + 1] = '\0';
+                }
+            }
         }
         #undef PHRASE_HISTORY
     } else {

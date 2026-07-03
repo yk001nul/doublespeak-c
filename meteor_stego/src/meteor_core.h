@@ -131,3 +131,28 @@ StyleQuestion meteor_draw_style_question(MeteorPRNG* prng,
 
 /* Pushes q into hist's rolling window (evicting the oldest if full). */
 void meteor_style_question_history_push(StyleQuestionHistory* hist, StyleQuestion q);
+
+/*
+ * Per-step decision of whether to end the current sentence (append "."
+ * and start a fresh one) instead of continuing it. Independent PRNG draw
+ * from StyleQuestion, taken at the same relative point in the loop on
+ * both encode.c and decode.c. See meteor_draw_clause_end() for the
+ * min/max phrase-per-sentence bounds.
+ */
+#define CLAUSE_END_MIN_PHRASES 2  /* never end right after the opener alone */
+#define CLAUSE_END_MAX_PHRASES 6  /* force an end so run-ons stay bounded */
+#define CLAUSE_END_DRAW_BITS   3  /* v==0 out of 8 possible values ⇒ ~1/8 chance/step */
+
+typedef struct {
+    int phrases_in_sentence;
+} ClauseState;
+
+/*
+ * Decide whether the phrase about to be generated should be the last one
+ * in the current sentence. Always draws from prng (even when the min/max
+ * bound forces the outcome), so PRNG stream position stays identical
+ * between encode and decode regardless of sentence length. Call once per
+ * step, after meteor_draw_style_question(), before the beta-bit slot
+ * draw inside meteor_encode_step()/meteor_decode_step().
+ */
+int meteor_draw_clause_end(MeteorPRNG* prng, const ClauseState* state);

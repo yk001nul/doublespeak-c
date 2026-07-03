@@ -164,6 +164,7 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         char subject_anchor[64] = {0};
         MeteorWordHistory content_hist = {0};
         StyleQuestionHistory q_hist = {0};
+        ClauseState clause_state = {0};
 
         while (*remaining && !done && steps < ctx->max_steps) {
             /* Must mirror encode.c: drawn every iteration, at the same
@@ -171,6 +172,9 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
                or the PRNG streams desync. */
             StyleQuestion question = meteor_draw_style_question(&prng, &q_hist);
             meteor_style_question_history_push(&q_hist, question);
+
+            /* Also mirrors encode.c — see meteor_draw_clause_end(). */
+            int end_clause = meteor_draw_clause_end(&prng, &clause_state);
 
             char blacklist_buf[512] = {0};
             size_t bl_off = 0;
@@ -256,9 +260,8 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
                 phrase_history[PHRASE_HISTORY - 1][63] = '\0';
             }
 
-            /* advance past the matched phrase and any following space */
+            /* advance past the matched phrase */
             remaining += advance;
-            while (*remaining == ' ') remaining++;
 
             /* advance full_recon */
             size_t plen   = strlen(chosen_buf);
@@ -272,6 +275,28 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
             memcpy(full_recon + recon_len, chosen_buf, plen);
             recon_len += plen;
             full_recon[recon_len] = '\0';
+
+            clause_state.phrases_in_sentence++;
+            if (end_clause) {
+                /* encode.c placed a literal "." immediately after this
+                   phrase (no space before it) — consume it here before
+                   skipping the space that precedes the next phrase. */
+                if (*remaining == '.') remaining++;
+
+                if (recon_len + 2 > recon_cap) {
+                    recon_cap  = (recon_len + 2) * 2;
+                    full_recon = (char*)realloc(full_recon, recon_cap);
+                    if (!full_recon) { *out_error = METEOR_ERR_OOM; done = 1; break; }
+                }
+                full_recon[recon_len++] = '.';
+                full_recon[recon_len]   = '\0';
+
+                subject_anchor[0] = '\0';
+                clause_state.phrases_in_sentence = 0;
+            }
+
+            /* skip the space before the next phrase (or trailing text) */
+            while (*remaining == ' ') remaining++;
 
             steps++;
         }
