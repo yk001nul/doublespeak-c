@@ -310,11 +310,27 @@ static const char* NEW_WORD_GRAMMAR =
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
 
-/* Phrase grammar: keys are multi-word lowercase phrases (1+ words separated by spaces). */
-static const char* PHRASE_GRAMMAR =
+/* Opening-step grammar: same JSON shape as the old free-form phrase
+ * grammar, but the phrase is forced to start with a pronoun or a
+ * determiner+noun ("the team", "his car") before any other word. This is
+ * the same class of fix as STYLE_QUESTION_CONNECTOR_GRAMMAR below: the
+ * soft prompt instruction ("every candidate MUST start with an explicit
+ * subject") was frequently ignored by the model at temp=0.0, producing
+ * bare-verb sentence openers ("starts his car...", "hits the road...")
+ * whenever a clause-end reset started a fresh sentence mid-covertext.
+ * Subject-hood itself isn't a closed vocabulary (unlike the connector
+ * case), so this can't fully enumerate valid subjects the way the
+ * connector grammar does — but a bare verb is never a pronoun or a
+ * determiner, so gating the first word on this set closes the loophole
+ * even though it doesn't cover every grammatically valid subject (e.g. a
+ * bare proper noun like "sarah" without a determiner is also excluded). */
+static const char* OPENING_SUBJECT_GRAMMAR =
     "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
     "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
-    "phrase      ::= word (\" \" word)*\n"
+    "phrase      ::= subject (\" \" word)+\n"
+    "subject     ::= pronoun | (determiner \" \" word)\n"
+    "pronoun     ::= \"he\" | \"she\" | \"it\" | \"they\" | \"we\" | \"i\" | \"you\"\n"
+    "determiner  ::= \"the\" | \"a\" | \"an\" | \"this\" | \"that\" | \"his\" | \"her\" | \"their\" | \"its\"\n"
     "word        ::= [a-z]+\n"
     "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws          ::= [ \\t\\n]*\n";
@@ -589,7 +605,7 @@ static const char* STYLE_QUESTION_CONNECTOR_GRAMMAR[STYLE_Q_COUNT] = {
     /* STYLE_Q_WHY       */ "\"to\" | \"in order to\" | \"because\"",
 };
 
-/* Continuation-step grammar: same JSON shape as PHRASE_GRAMMAR, but each
+/* Continuation-step grammar: same JSON shape as OPENING_SUBJECT_GRAMMAR, but each
    phrase is forced to start with one of the question's connector words
    (see STYLE_QUESTION_CONNECTOR_GRAMMAR), guaranteeing every candidate —
    not just "roughly half" — reads as a subordinate clause glued onto the
@@ -647,14 +663,19 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
        Continuation step (subject_anchor set): must grammatically continue
        the current sentence (same subject, same tense, no restart). Keyed
        off sa_len rather than ctx_len so a second sentence mid-covertext
-       also gets opening-step treatment, not just the very first phrase. */
+       also gets opening-step treatment, not just the very first phrase.
+       As of OPENING_SUBJECT_GRAMMAR, the subject requirement below is
+       enforced by GBNF, not just prompted — this wording states it as a
+       requirement (matching the connector wording style) rather than a
+       request, since the model has no way to produce a bare-verb opener
+       instead. */
     const char* phase = sa_len > 0
         ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
-          "start with an explicit subject — a pronoun (he/she/they/it) or a noun "
-          "phrase (\"the team\", \"the government\") — immediately followed by its "
-          "verb. Do NOT start with a preposition, a bare verb, or a dangling "
-          "phrase with no subject.";
+          "start with an explicit subject — a pronoun (he/she/they/it) or a "
+          "determiner + noun (\"the team\", \"his car\", \"this plan\") — "
+          "immediately followed by its verb. Do NOT start with a preposition, a "
+          "bare verb, or a dangling phrase with no subject.";
 
     char bl_clause[640] = {0};
     if (bl_len > 0)
@@ -860,8 +881,8 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                        blacklist_words, subject_anchor, question);
     if (!prompt) return NULL;
 
-    /* Opening step of a sentence (subject_anchor empty) keeps the
-       free-form grammar — it doesn't use `question` (see
+    /* Opening step of a sentence (subject_anchor empty) uses the fixed
+       subject-first grammar — it doesn't use `question` (see
        build_phrase_prompt). Continuation steps get a per-question
        grammar that forces the connector, must be freed; the opening
        step's grammar is a string literal and must NOT be freed. Keyed
@@ -871,7 +892,7 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     int   is_continuation = subject_anchor && subject_anchor[0];
     char* dyn_grammar      = is_continuation ? build_phrase_grammar(question) : NULL;
     if (is_continuation && !dyn_grammar) { free(prompt); return NULL; }
-    const char* grammar = is_continuation ? dyn_grammar : PHRASE_GRAMMAR;
+    const char* grammar = is_continuation ? dyn_grammar : OPENING_SUBJECT_GRAMMAR;
 
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
