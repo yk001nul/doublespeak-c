@@ -1,0 +1,37 @@
+%% Doublespeak / Meteor stego — simplified encode/decode flow (layman version)
+%% This hides all crypto/grammar/LLM implementation detail and focuses on the core idea:
+%% both sides share a secret key that drives an identical "random choice stream",
+%% and the message is hidden as a sequence of choices among AI-generated options.
+
+flowchart TD
+
+    Key([" Shared secret key\n(known to both sender & receiver) "]):::key
+
+    Key --> RNG1
+    Key --> RNG2
+
+    subgraph ENC[" ENCODING — hiding the message "]
+        direction TB
+        M1["Secret message\n(as 0s and 1s)"] --> RNG1["Keyed random-number\ngenerator"]
+        RNG1 --> STEP1{"Next few bits of\nthe message\npick a number"}
+        AI1["AI writes several\ndifferent ways to\ncontinue the sentence"] --> STEP1
+        STEP1 --> PICK1["Pick the AI option\nthat matches that number"]
+        PICK1 --> TEXT["Add it to the\ncover story so far"]
+        TEXT -->|"more message bits left?"| RNG1
+        TEXT -->|"message fully hidden"| OUT1["Innocent-looking\ncover text"]
+    end
+
+    subgraph DEC[" DECODING — recovering the message "]
+        direction TB
+        IN2["Innocent-looking\ncover text"] --> READ["Look at the next\npiece of the text"]
+        RNG2["Keyed random-number\ngenerator"] --> AI2
+        READ --> AI2["AI regenerates the\nsame set of options\n(using the same random stream)"]
+        AI2 --> MATCH["Find which option\nmatches the actual text"]
+        MATCH --> BITS["That option's number\n= those message bits"]
+        BITS -->|"more text left?"| RNG2
+        BITS -->|"end marker found"| OUT2["Recovered secret\nmessage"]
+    end
+
+    OUT1 -. "sent openly, e.g. email/chat" .-> IN2
+
+    classDef key fill:#333,stroke:#000,color:#fff,stroke-width:2px;
