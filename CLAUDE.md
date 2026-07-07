@@ -12,8 +12,8 @@ The `doublespeak/` directory currently contains a Visual Studio CMake scaffold (
 
 | Directory | Purpose |
 |---|---|
-| `meteor_stego/` | The Meteor stego C library (main implementation) |
-| `doublespeak/` | Original VS-generated C++ scaffold (hello-world placeholder, not the library) |
+| `meteor_stego/` | The Meteor stego C library (main implementation), plus the `doublespeak` CLI (`meteor_stego/apps/`) that exercises it end-to-end |
+| `doublespeak/` | Original VS-generated C++ scaffold (hello-world placeholder, not the library, and not the CLI — see `meteor_stego/apps/doublespeak.c`) |
 
 ## Windows toolchain paths
 
@@ -192,6 +192,75 @@ All four covertexts below successfully round-tripped (`meteor_decode` recovered 
 | `FORMAL_EMAIL` | The team will present the quarterly results to stakeholders on Friday. | `hi` | the team is scheduled to to avoid the uncertainty of public transport schedules to the main branch through a prearranged meeting room to ensure timely attendance to meet the stakeholders. they implement with the department heads through a dedicated communication channel to avoid delays in transit with the project coordinators. the team presents to guarantee punctuality by setting reminders to meet the manager to ensure timely attendance to avoid public transport unpredictability. she prepares with the department heads. |
 
 Note the `FORMAL_EMAIL` sample's "to to" duplication is the known grammar/candidate-generation artifact already listed above ("Known non-blocking quality issues") — not a correctness bug, decode still matches via prefix matching.
+
+## `doublespeak` console app (`imp/doublespeak-console` branch)
+
+A small CLI in `meteor_stego/apps/` (`doublespeak.h`/`.c`/`doublespeak_main.c`) that
+drives the library's public `meteor.h` API end-to-end, so encode/decode can be
+exercised by hand without writing a throwaway test program. Built as a new
+executable target in `meteor_stego/CMakeLists.txt` alongside the existing test
+binaries (`add_executable(doublespeak apps/doublespeak.c apps/doublespeak_main.c)`,
+linked against the `meteor` library) — the separate `doublespeak/` VS scaffold
+folder is unrelated and untouched.
+
+**Usage:** `doublespeak message [-f] [-d] context passphrase [style_index] [outputpath] [URL]`
+- `message` — text to encode, or (with `-f`) a filepath to read it from. Under
+  `-d` this is the covertext to decode instead.
+- `-f` — treat `message` as a filepath.
+- `-d` — decode instead of encode (default: encode).
+- `context` / `passphrase` — mandatory; the shared starting context and the
+  passphrase `meteor_create()` derives the HKDF key from.
+- `style_index` / `outputpath` / `URL` — optional and **strictly positional**
+  (can't skip one and supply a later one): style `1-4` (default `1`, maps
+  directly onto `MeteorStyle`'s `INFORMAL_CHAT..NEWS_ARTICLE`), an output
+  filepath (default: stdout), and the llama-server URL (default:
+  `http://127.0.0.1:8080`).
+- No arguments, or any parse error, prints the usage guide and exits `1`.
+
+**Defaults baked into `doublespeak_run()`:** `beta=3`, `num_candidates=8`,
+`max_steps=256`, `llm_timeout_ms=30000` (matching the test suite's own
+defaults), and **`salt=NULL` (zero salt)** — the CLI has no salt argument, so
+every invocation shares a zero HKDF salt. That's a real reduction in security
+for production use, but acceptable for this CLI's stated purpose (exercising
+the encode/decode flow, not being a hardened secure-messaging tool).
+
+**Tests:** `meteor_stego/tests/test_doublespeak_cli.c` (target
+`test_doublespeak_cli`, ctest name `doublespeak_cli`), two groups in one file —
+argument-parsing permutations (fast, no server needed, call
+`doublespeak_parse_args()` directly) and a real encode→decode round trip
+through `doublespeak_run()` (both direct-text and `-f` file variants, the
+latter using the committed `tests/fixtures/sample_message.txt`), gated on
+`llama-server` being reachable via the same `server_reachable()`/
+`SKIP_REGULAR_EXPRESSION "llama-server not reachable"` convention the other
+LLM-backed tests use.
+
+**Live encode progress:** there's no reliable way to predict total step count
+or per-step latency ahead of time — in style mode, bits recovered per step
+(`step.cp_len` in `meteor_core.c`) depends on the live LLM probability
+distribution at that step, not just message size (a 2-byte "hi" message has
+taken anywhere from ~8 to 20+ phrase steps across samples captured during
+development), and per-step latency depends on model/hardware/context length.
+So instead of an upfront ETA, `meteor.h` exposes an additive, non-breaking
+`meteor_encode_ex()` (`MeteorProgressFn progress_cb` + `void*
+progress_userdata` appended to `meteor_encode()`'s params) that invokes the
+callback synchronously, once per step, from inside the existing encode loop —
+no new threads. `meteor_encode()` itself is unchanged (a thin wrapper calling
+`meteor_encode_ex(..., NULL, NULL, ...)`), and neither FFI binding
+(`bindings/python/meteor.py`, `bindings/csharp/Meteor.cs`) needs updating,
+since they don't reference the new function and `MeteorConfig`'s layout is
+untouched (those bindings were already stale before this change — the Python
+one is missing the `style` field — so this was also a deliberate choice not to
+add to that drift).
+
+`doublespeak_run()`'s encode path (`apps/doublespeak.c`) uses
+`meteor_encode_ex()` to print a rolling progress line **to stderr** (stdout /
+`outputpath` stay clean for the actual covertext) after every step: elapsed
+time always, plus an estimated remaining time and projected finish-time-of-day
+once the step has recovered at least one bit (the estimate refines each step
+as more real rate data accumulates; it can appear as early as step 1 if that
+step yielded bits). The decode path has no equivalent — decode's message
+length isn't known until decoding finishes, and there's no existing per-step
+sampling primitive for it the way `meteor_estimate_capacity()` gives encode.
 
 ## Dependencies
 

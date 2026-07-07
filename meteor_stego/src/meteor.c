@@ -90,10 +90,23 @@ char* meteor_encode(MeteorCtx*     ctx,
                     const char*    starting_context,
                     int*           out_error)
 {
+    return meteor_encode_ex(ctx, message, msg_len, starting_context,
+                            NULL, NULL, out_error);
+}
+
+char* meteor_encode_ex(MeteorCtx*       ctx,
+                       const uint8_t*    message,
+                       size_t            msg_len,
+                       const char*       starting_context,
+                       MeteorProgressFn  progress_cb,
+                       void*             progress_userdata,
+                       int*              out_error)
+{
     int dummy;
     if (!out_error) out_error = &dummy;
     if (!ctx || !message) { *out_error = METEOR_ERR_CONFIG; return NULL; }
-    return meteor_encode_impl(ctx, message, msg_len, starting_context, out_error);
+    return meteor_encode_impl(ctx, message, msg_len, starting_context,
+                              progress_cb, progress_userdata, out_error);
 }
 
 uint8_t* meteor_decode(MeteorCtx*  ctx,
