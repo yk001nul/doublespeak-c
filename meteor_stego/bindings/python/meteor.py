@@ -47,6 +47,12 @@ class _MeteorConfig(ctypes.Structure):
         ("hyphen_dict",    ctypes.c_char_p),
         ("max_steps",      ctypes.c_int),
         ("llm_timeout_ms", ctypes.c_int),
+        # Must stay last, matching MeteorConfig's field order in meteor.h.
+        # Without it, meteor_create() reads config->style past the end of
+        # this (smaller) struct — an out-of-bounds read. 0 = METEOR_STYLE_NONE
+        # (legacy mode, matching this binding's current behavior); this
+        # binding doesn't yet expose a way to select the other styles.
+        ("style",          ctypes.c_int),
     ]
 
 _lib.meteor_create.restype   = ctypes.c_void_p
@@ -109,6 +115,7 @@ class Meteor:
             hyphen_dict    = hyphen_dict.encode() if hyphen_dict else None,
             max_steps      = 256,
             llm_timeout_ms = 30000,
+            style          = 0,  # METEOR_STYLE_NONE
         )
         self._ctx = _lib.meteor_create(ctypes.byref(cfg))
         if not self._ctx:

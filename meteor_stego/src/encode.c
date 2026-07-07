@@ -16,6 +16,8 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
                          const uint8_t*    message,
                          size_t            msg_len,
                          const char*       starting_context,
+                         MeteorProgressFn  progress_cb,
+                         void*             progress_userdata,
                          int*              out_error)
 {
     *out_error = METEOR_OK;
@@ -177,6 +179,8 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
 
             bit_offset += (size_t)step.cp_len;
             steps++;
+            if (progress_cb)
+                progress_cb(progress_userdata, steps, (int)bit_offset, (int)total_bits);
 
             if (subject_anchor[0] == '\0') {
                 strncpy(subject_anchor, step.chosen, 63);
@@ -282,6 +286,8 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
 
             bit_offset += (size_t)step.cp_len;
             steps++;
+            if (progress_cb)
+                progress_cb(progress_userdata, steps, (int)bit_offset, (int)total_bits);
 
             if (strcmp(step.chosen, EOW_TOKEN) == 0) {
                 size_t pw_len = strlen(partial_word);

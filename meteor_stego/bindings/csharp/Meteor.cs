@@ -18,6 +18,12 @@ namespace MeteorStego
         [MarshalAs(UnmanagedType.LPStr)] public string HyphenDict;
         public int     MaxSteps;
         public int     LlmTimeoutMs;
+        // Must stay last, matching MeteorConfig's field order in meteor.h.
+        // Without it, meteor_create() reads config->style past the end of
+        // this (smaller) struct — an out-of-bounds read. 0 = METEOR_STYLE_NONE
+        // (legacy mode, matching this binding's current behavior); this
+        // binding doesn't yet expose a way to select the other styles.
+        public int     Style;
     }
 
     public static class MeteorNative
@@ -100,6 +106,7 @@ namespace MeteorStego
                 HyphenDict    = hyphenDict,
                 MaxSteps      = 256,
                 LlmTimeoutMs  = 30000,
+                Style         = 0, // METEOR_STYLE_NONE
             };
 
             _ctx = MeteorNative.meteor_create(ref cfg);

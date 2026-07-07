@@ -234,6 +234,13 @@ add_custom_target(server_health
     USES_TERMINAL
 )
 
+# ── doublespeak console app ───────────────────────────────────────────────────
+
+add_executable(doublespeak apps/doublespeak.c apps/doublespeak_main.c)
+target_include_directories(doublespeak PRIVATE include apps)
+add_dependencies(doublespeak meteor)
+target_link_libraries(doublespeak PRIVATE meteor)
+
 # ── Tests ────────────────────────────────────────────────────────[...]
 
 enable_testing()
@@ -285,6 +292,24 @@ foreach(test ${ALL_TESTS})
     add_test(NAME ${test} COMMAND test_${test})
 endforeach()
 
-set_tests_properties(roundtrip determinism styled_encode capacity PROPERTIES
+add_executable(test_doublespeak_cli tests/test_doublespeak_cli.c apps/doublespeak.c)
+target_include_directories(test_doublespeak_cli PRIVATE
+    include
+    ${cjson_SOURCE_DIR}
+)
+target_compile_definitions(test_doublespeak_cli PRIVATE
+    ${SODIUM_COMPILE_DEFS} ${HTTP_COMPILE_DEF}
+    METEOR_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+target_link_libraries(test_doublespeak_cli PRIVATE
+    ${SODIUM_TARGET}
+    ${SODIUM_EXTRA_LIBS}
+    ${HTTP_LINK_LIBS}
+    cjson
+)
+add_dependencies(test_doublespeak_cli meteor)
+target_link_libraries(test_doublespeak_cli PRIVATE meteor)
+add_test(NAME doublespeak_cli COMMAND test_doublespeak_cli)
+
+set_tests_properties(roundtrip determinism styled_encode capacity doublespeak_cli PROPERTIES
     SKIP_REGULAR_EXPRESSION "llama-server not reachable"
 )

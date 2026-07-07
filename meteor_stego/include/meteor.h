@@ -84,6 +84,32 @@ char* meteor_encode(MeteorCtx*     ctx,
                     const char*    starting_context,
                     int*           out_error);
 
+/*
+ * Invoked synchronously (on the calling thread) once per encode step, right
+ * after that step's bits are counted and before the next LLM call starts.
+ * step: 1-based step counter. bits_done / total_bits: message-bit progress
+ * (not counting the null-terminator padding is up to the caller to account
+ * for). There's no reliable way to predict total step count or per-step
+ * latency ahead of time (both depend on the live LLM probability
+ * distributions at each step, not just message size) — this exists so a
+ * caller can show a rolling estimate that refines as real steps complete,
+ * rather than a single upfront number.
+ */
+typedef void (*MeteorProgressFn)(void* userdata, int step, int bits_done, int total_bits);
+
+/*
+ * Same as meteor_encode(), but invokes progress_cb (if non-NULL) once per
+ * encode step as described above. meteor_encode() itself is equivalent to
+ * calling this with progress_cb = NULL.
+ */
+char* meteor_encode_ex(MeteorCtx*       ctx,
+                       const uint8_t*    message,
+                       size_t            msg_len,
+                       const char*       starting_context,
+                       MeteorProgressFn  progress_cb,
+                       void*             progress_userdata,
+                       int*              out_error);
+
 /* ── Decode ──────────────────────────────────────────────────────────────── */
 
 /*
