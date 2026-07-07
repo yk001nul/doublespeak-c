@@ -254,8 +254,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release-staging
           $dir = "meteor_stego\out\build\${{ matrix.configure_preset }}"
-          Copy-Item "$dir\meteor.dll"  release-staging\
-          Copy-Item "$dir\meteor.lib"  release-staging\ -ErrorAction SilentlyContinue
+          Copy-Item "$dir\meteor.dll"       release-staging\
+          Copy-Item "$dir\meteor.lib"       release-staging\ -ErrorAction SilentlyContinue
+          Copy-Item "$dir\doublespeak.exe"  release-staging\
           Copy-Item "meteor_stego\include\meteor.h" release-staging\
 
       - name: Stage artifacts (Linux / macOS)
@@ -263,6 +264,7 @@ jobs:
         run: |
           mkdir -p release-staging
           cp meteor_stego/out/build/${{ matrix.configure_preset }}/libmeteor.* release-staging/
+          cp meteor_stego/out/build/${{ matrix.configure_preset }}/doublespeak release-staging/
           cp meteor_stego/include/meteor.h release-staging/
 
       - name: Upload artifact
