@@ -95,6 +95,12 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
  *   continuation should answer, drawn via meteor_draw_style_question().
  *   Ignored when full_context is empty (opening step uses its own
  *   subject-establishing instruction instead).
+ * A digression sentence's opening step is not special-cased by this
+ * function at all — the caller passes a temporary preamble (built via
+ * llm_client_build_preamble() on the stage-1 answer from
+ * llm_client_get_digression_answer() below) in place of the main preamble
+ * for that one call, so it takes the exact same code path as a normal
+ * topic-anchored opening.
  * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
  */
 LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
@@ -104,6 +110,31 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* blacklist_words,
                                           const char* subject_anchor,
                                           StyleQuestion question);
+
+/*
+ * Stage 1 of a sentence-level digression (style mode): asks a plain,
+ * non-bit-embedding question about a secondary entity from the text so
+ * far (per axis, one of DIGRESS_VARIANT_COUNT phrasings picked by
+ * variant) and returns the model's one-sentence answer. This call never
+ * carries message-payload bits — no grammar/candidate distribution, just
+ * one deterministic /completion round-trip (temp 0, seed 42), so both
+ * encode.c and decode.c get byte-identical text given identical
+ * full_context/axis/variant.
+ * full_context: covertext generated so far (same value passed as
+ *   full_context elsewhere).
+ * axis: which DigressionAxis question to ask, drawn via
+ *   meteor_draw_digression_axis().
+ * variant: which of DIGRESS_VARIANT_COUNT phrasings of that axis's
+ *   question to use, drawn via meteor_draw_digression_variant().
+ * The caller feeds the returned text into llm_client_build_preamble() and
+ * then the normal llm_client_get_phrase_dist() opening-step path (stage
+ * 2) to actually embed bits while paraphrasing the answer.
+ * Returns NULL only on OOM; HTTP/parse failures fall back internally to a
+ * fixed deterministic string so encode/decode stay in lockstep. Caller
+ * frees the returned string.
+ */
+char* llm_client_get_digression_answer(LLMClient* client, const char* full_context,
+                                       DigressionAxis axis, int variant);
 
 void llm_response_free(LLMResponse* resp);
 

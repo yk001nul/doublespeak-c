@@ -156,3 +156,92 @@ typedef struct {
  * draw inside meteor_encode_step()/meteor_decode_step().
  */
 int meteor_draw_clause_end(MeteorPRNG* prng, const ClauseState* state);
+
+/*
+ * Axis of a sentence-level digression: instead of paraphrasing the fixed
+ * topic, the opening phrase of the sentence is generated from a two-stage
+ * process — (1) a non-bit-embedding question is asked internally (never
+ * written to the covertext) about a secondary subject/object mentioned in
+ * the text so far, per this axis, yielding a one-off answer text; (2) that
+ * answer is fed through the normal paraphrase-candidate/beta-bit-selection
+ * machinery exactly like the main topic, so the covertext ends up
+ * containing a paraphrase of the answer, not the question. Only applies
+ * at sentence-opening steps (subject_anchor empty), never at continuation
+ * steps. See llm_client_get_digression_answer().
+ */
+typedef enum {
+    DIGRESS_AXIS_DESCRIBE = 0,  /* appearance/property: "what color/shape/kind" */
+    DIGRESS_AXIS_STATE,         /* condition/status: "is it still running" */
+    DIGRESS_AXIS_SIGNIFICANCE,  /* importance/seriousness/consequence */
+    DIGRESS_AXIS_ORIGIN,        /* cause/history/reason it exists */
+    DIGRESS_AXIS_OUTCOME,       /* what happens to it next / implication */
+    DIGRESS_AXIS_COUNT
+} DigressionAxis;
+
+/*
+ * Rolling history of recently-drawn digression axes, used only to bias
+ * the redraw in meteor_draw_digression_axis() away from immediate
+ * repeats. Same determinism rationale as StyleQuestionHistory.
+ */
+#define DIGRESS_AXIS_HISTORY     1  /* forbid repeating the immediately-previous axis */
+#define DIGRESS_AXIS_MAX_REDRAWS 4  /* deterministic cap; a redraw loop always terminates */
+
+typedef struct {
+    DigressionAxis recent[DIGRESS_AXIS_HISTORY];
+    int            count;
+} DigressionAxisHistory;
+
+/*
+ * Draw the next digression axis from prng (3 bits, mod DIGRESS_AXIS_COUNT),
+ * redrawing up to DIGRESS_AXIS_MAX_REDRAWS times if it collides with hist.
+ * Must be called exactly once per loop iteration, at the same point
+ * relative to the other per-step draws, on both encode.c and decode.c —
+ * same lockstep requirement as meteor_draw_style_question().
+ */
+DigressionAxis meteor_draw_digression_axis(MeteorPRNG* prng,
+                                            const DigressionAxisHistory* hist);
+
+/* Pushes a into hist's rolling window (evicting the oldest if full). */
+void meteor_digression_axis_history_push(DigressionAxisHistory* hist, DigressionAxis a);
+
+/*
+ * Per-sentence digression state: tracks how many topic-anchored (non-
+ * digression) sentences have completed, and whether the most recently
+ * completed sentence was itself a digression, so digression can be
+ * capped at one hop (a digression sentence is always followed by a
+ * forced topic-anchored sentence) and gated behind a minimum number of
+ * topic sentences at the start of the covertext.
+ */
+#define DIGRESS_MIN_TOPIC_SENTENCES 1  /* >=1 topic sentence before first digression is eligible */
+#define DIGRESS_DRAW_BITS           3  /* v==0 out of 8 possible values ⇒ ~1/8 chance/step */
+
+typedef struct {
+    int topic_sentences_completed; /* count of completed topic-anchored sentences (MIN gate) */
+    int last_was_digression;       /* 1 if the most recently completed sentence was a digression */
+} DigressionState;
+
+/*
+ * Decide whether the sentence about to be opened should digress onto a
+ * secondary entity instead of paraphrasing the topic. Always draws from
+ * prng (even when the min-topic-sentences gate or the cap-at-one-hop
+ * rule forces the outcome), so PRNG stream position stays identical
+ * between encode and decode regardless of digression history. Call once
+ * per step (every phrase, not just sentence-opening steps), at the same
+ * relative point as meteor_draw_clause_end() — its result is only
+ * consulted on steps where subject_anchor is empty, and discarded
+ * otherwise, exactly like StyleQuestion on opening steps.
+ */
+int meteor_draw_digress_mode(MeteorPRNG* prng, const DigressionState* state);
+
+/*
+ * Picks which of DIGRESS_VARIANT_COUNT alternate phrasings of the chosen
+ * DigressionAxis's internal question to ask, purely for variety (so the
+ * same axis doesn't always ask the identical question wording across a
+ * long message). Always drawn from prng every step (lockstep, same as
+ * meteor_draw_digress_mode()); only consulted on sentence-opening steps
+ * where digression fires.
+ */
+#define DIGRESS_VARIANT_COUNT     2
+#define DIGRESS_VARIANT_DRAW_BITS 1
+
+int meteor_draw_digression_variant(MeteorPRNG* prng);

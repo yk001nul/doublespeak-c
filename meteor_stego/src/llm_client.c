@@ -629,6 +629,167 @@ static char* build_phrase_grammar(StyleQuestion question)
     return buf;
 }
 
+/* ── digression: stage 1, internal question (never written to covertext) ── */
+/* Axis-only (style-agnostic) — style flavor is applied in stage 2 by
+   reusing llm_client_build_preamble() on the answer text, exactly like the
+   main topic. Two variants per axis purely for wording variety across a
+   long message. Both variants ask the model to pick its own secondary
+   entity from the text so far (no explicit NER — same "let the model pick"
+   approach as the rest of style mode) and answer directly, in one plain
+   sentence, with no grammar constraint (this call never carries message
+   bits — see llm_client_get_digression_answer()). */
+static const char* DIGRESSION_QUESTION[DIGRESS_AXIS_COUNT][DIGRESS_VARIANT_COUNT] = {
+    /* DIGRESS_AXIS_DESCRIBE */
+    {
+        "Look at the sentence you just wrote and pick a secondary object or "
+        "person mentioned there (not the main subject). What does it look "
+        "like, or what kind is it?",
+        "From the sentence you just wrote, pick something or someone "
+        "secondary (not the main subject). How would you describe its "
+        "appearance or type?",
+    },
+    /* DIGRESS_AXIS_STATE */
+    {
+        "Look at the sentence you just wrote and pick a secondary object or "
+        "person mentioned there (not the main subject). What is its "
+        "current condition or status?",
+        "From the sentence you just wrote, pick something or someone "
+        "secondary (not the main subject). Is it still the same, or has "
+        "something changed about it?",
+    },
+    /* DIGRESS_AXIS_SIGNIFICANCE */
+    {
+        "Look at the sentence you just wrote and pick a secondary object or "
+        "person mentioned there (not the main subject). Why does it "
+        "matter, or how serious is it?",
+        "From the sentence you just wrote, pick something or someone "
+        "secondary (not the main subject). What impact or consequence "
+        "does it have?",
+    },
+    /* DIGRESS_AXIS_ORIGIN */
+    {
+        "Look at the sentence you just wrote and pick a secondary object or "
+        "person mentioned there (not the main subject). How did it come "
+        "about, or why does it exist?",
+        "From the sentence you just wrote, pick something or someone "
+        "secondary (not the main subject). What caused it or led to it?",
+    },
+    /* DIGRESS_AXIS_OUTCOME */
+    {
+        "Look at the sentence you just wrote and pick a secondary object or "
+        "person mentioned there (not the main subject). What is likely to "
+        "happen to it next?",
+        "From the sentence you just wrote, pick something or someone "
+        "secondary (not the main subject). What will be the result or "
+        "next step involving it?",
+    },
+};
+
+static char* build_digression_question_prompt(const char* ctx, DigressionAxis axis, int variant)
+{
+    const char* question = DIGRESSION_QUESTION[axis][variant];
+    size_t ctx_len  = ctx && ctx[0] ? strlen(ctx) : 0;
+    size_t buf_size = ctx_len + strlen(question) + 160;
+    char*  buf      = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    snprintf(buf, buf_size,
+        "Text so far: \"%s\"\n"
+        "%s\n"
+        "Answer in one short, plain sentence. Do not restate the question "
+        "or add commentary — just give the answer.",
+        ctx ? ctx : "", question);
+    return buf;
+}
+
+/* Extracts and lightly sanitizes the plain-text answer from a /completion
+   response whose "content" is natural language (not the JSON-candidate
+   shape parse_llm_response expects): trims leading whitespace/quotes,
+   collapses newlines to spaces, drops stray quote characters (so it nests
+   cleanly inside llm_client_build_preamble()'s Original: "..." wrapper),
+   and truncates at the first sentence-ending punctuation. Returns NULL on
+   unparseable/empty input — caller falls back to a fixed answer. */
+static char* parse_llm_plain_answer(const char* raw_json)
+{
+    cJSON* env = cJSON_Parse(raw_json);
+    if (!env) return NULL;
+    cJSON* ci = cJSON_GetObjectItemCaseSensitive(env, "content");
+    const char* content = (ci && cJSON_IsString(ci)) ? ci->valuestring : NULL;
+    if (!content) { cJSON_Delete(env); return NULL; }
+
+    const char* start = content;
+    while (*start == ' ' || *start == '\t' || *start == '\n' ||
+           *start == '\r' || *start == '"')
+        start++;
+
+    char* out = (char*)malloc(strlen(start) + 1);
+    if (!out) { cJSON_Delete(env); return NULL; }
+    size_t oi = 0;
+    for (const char* p = start; *p != '\0'; p++) {
+        char c = *p;
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        if (c == '"') continue;
+        out[oi++] = c;
+        if (c == '.' || c == '!' || c == '?') break;
+    }
+    out[oi] = '\0';
+    cJSON_Delete(env);
+
+    if (out[0] == '\0') { free(out); return NULL; }
+    return out;
+}
+
+/* Deterministic local fallback (no server round-trip) used if the /completion
+   call fails or returns something unparseable, so both encode.c and decode.c
+   still get byte-identical text to paraphrase in stage 2. */
+static const char* DIGRESSION_FALLBACK_ANSWER =
+    "it has changed in a small but noticeable way";
+
+static char* dup_digression_fallback(void)
+{
+    size_t n = strlen(DIGRESSION_FALLBACK_ANSWER) + 1;
+    char*  fb = (char*)malloc(n);
+    if (fb) memcpy(fb, DIGRESSION_FALLBACK_ANSWER, n);
+    return fb;
+}
+
+/* Stage 1 of a digression: asks DIGRESSION_QUESTION[axis][variant] as a
+   plain, non-bit-embedding /completion call (no grammar — free text) and
+   returns the answer (caller frees). Never returns NULL except on OOM —
+   HTTP/parse failures fall back to a fixed deterministic string so encode
+   and decode stay in lockstep even if the server hiccups. The returned
+   text is meant to be fed into llm_client_build_preamble() and then the
+   normal phrase-distribution/beta-bit machinery (stage 2), exactly like
+   the main topic — see meteor_core.h's DigressionAxis doc comment. */
+char* llm_client_get_digression_answer(LLMClient* client, const char* full_context,
+                                        DigressionAxis axis, int variant)
+{
+    char* prompt = build_digression_question_prompt(full_context, axis, variant);
+    if (!prompt) return NULL;
+
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt",      prompt);
+    cJSON_AddNumberToObject(req, "n_predict",   48);
+    cJSON_AddNumberToObject(req, "temperature", 0.0);
+    cJSON_AddNumberToObject(req, "seed",        42);
+    cJSON_AddBoolToObject  (req, "stream",      0);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
+    cJSON* stop = cJSON_CreateArray();
+    cJSON_AddItemToArray(stop, cJSON_CreateString("\n"));
+    cJSON_AddItemToObject(req, "stop", stop);
+    char* body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    free(prompt);
+    if (!body) return NULL;
+
+    char* raw = HTTP_POST(client, "/completion", body);
+    free(body);
+    if (!raw) return dup_digression_fallback();
+
+    char* answer = parse_llm_plain_answer(raw);
+    free(raw);
+    return answer ? answer : dup_digression_fallback();
+}
+
 static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                                   const char* blacklist_phrases,
                                   const char* blacklist_words,
@@ -659,7 +820,13 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
        ended and reset the anchor): every candidate MUST open with an
        explicit subject so later steps have a grammatical anchor to agree
        with (a bare verb-phrase/prepositional opener has nothing to agree
-       with, which is what caused subject-less fragments in practice).
+       with, which is what caused subject-less fragments in practice). A
+       digression sentence also lands here — its "preamble" argument is a
+       one-off temporary preamble quoting the stage-1 answer text instead
+       of the main topic (see llm_client_get_digression_answer() and its
+       call sites in encode.c/decode.c), so this function itself needs no
+       digression-specific branch: it just paraphrases whatever preamble
+       it was given, same code path either way.
        Continuation step (subject_anchor set): must grammatically continue
        the current sentence (same subject, same tense, no restart). Keyed
        off sa_len rather than ctx_len so a second sentence mid-covertext
@@ -812,6 +979,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -848,6 +1016,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -888,7 +1057,10 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
        step's grammar is a string literal and must NOT be freed. Keyed
        off subject_anchor, matching build_phrase_prompt's phase
        selection — NOT full_context, which stays non-empty across
-       sentence boundaries. */
+       sentence boundaries. A digression opening step is not special-cased
+       here: its caller passes a temporary preamble quoting the stage-1
+       answer text in place of the main preamble, so it takes the exact
+       same !is_continuation path as a normal topic-anchored opening. */
     int   is_continuation = subject_anchor && subject_anchor[0];
     char* dyn_grammar      = is_continuation ? build_phrase_grammar(question) : NULL;
     if (is_continuation && !dyn_grammar) { free(prompt); return NULL; }
@@ -901,6 +1073,7 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);

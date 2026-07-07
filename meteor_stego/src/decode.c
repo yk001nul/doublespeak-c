@@ -165,6 +165,11 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         MeteorWordHistory content_hist = {0};
         StyleQuestionHistory q_hist = {0};
         ClauseState clause_state = {0};
+        DigressionState digress_state = {0};
+        DigressionAxisHistory axis_hist = {0};
+        int sentence_is_digression = 0;
+        DigressionAxis sentence_axis = DIGRESS_AXIS_DESCRIBE;
+        int sentence_variant = 0;
 
         while (*remaining && !done && steps < ctx->max_steps) {
             /* Must mirror encode.c: drawn every iteration, at the same
@@ -175,6 +180,22 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
             /* Also mirrors encode.c — see meteor_draw_clause_end(). */
             int end_clause = meteor_draw_clause_end(&prng, &clause_state);
+
+            /* Also mirrors encode.c — see meteor_draw_digress_mode()/
+               meteor_draw_digression_axis()/meteor_draw_digression_variant().
+               Only consulted below when this iteration is a
+               sentence-opening step. */
+            int            digress = meteor_draw_digress_mode(&prng, &digress_state);
+            DigressionAxis axis    = meteor_draw_digression_axis(&prng, &axis_hist);
+            meteor_digression_axis_history_push(&axis_hist, axis);
+            int            variant = meteor_draw_digression_variant(&prng);
+
+            int is_opening = (subject_anchor[0] == '\0');
+            if (is_opening) {
+                sentence_is_digression = digress;
+                sentence_axis          = axis;
+                sentence_variant       = variant;
+            }
 
             char blacklist_buf[512] = {0};
             size_t bl_off = 0;
@@ -187,12 +208,26 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
             meteor_word_history_join(&content_hist, word_blacklist_buf,
                                       sizeof(word_blacklist_buf));
 
+            /* Mirrors encode.c — see llm_client_get_digression_answer() in
+               llm_client.h. */
+            char* digress_answer   = NULL;
+            char* digress_preamble = NULL;
+            if (is_opening && sentence_is_digression) {
+                digress_answer = llm_client_get_digression_answer(
+                    ctx->llm, full_recon, sentence_axis, sentence_variant);
+                if (!digress_answer) { *out_error = METEOR_ERR_OOM; done = 1; break; }
+                digress_preamble = llm_client_build_preamble((int)ctx->style, digress_answer);
+                if (!digress_preamble) { free(digress_answer); *out_error = METEOR_ERR_OOM; done = 1; break; }
+            }
+
             LLMResponse* resp = llm_client_get_phrase_dist(
-                ctx->llm, preamble, full_recon,
+                ctx->llm, digress_preamble ? digress_preamble : preamble, full_recon,
                 hist_count > 0 ? blacklist_buf : NULL,
                 word_blacklist_buf[0] ? word_blacklist_buf : NULL,
                 subject_anchor[0] ? subject_anchor : NULL,
                 question);
+            free(digress_answer);
+            free(digress_preamble);
             if (!resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
 
             const char** p_texts = (const char**)malloc(
@@ -293,6 +328,9 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
                 subject_anchor[0] = '\0';
                 clause_state.phrases_in_sentence = 0;
+
+                digress_state.last_was_digression = sentence_is_digression;
+                if (!sentence_is_digression) digress_state.topic_sentences_completed++;
             }
 
             /* skip the space before the next phrase (or trailing text) */

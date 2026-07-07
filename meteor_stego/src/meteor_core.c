@@ -43,10 +43,11 @@ MeteorDist* meteor_build_dist(const char** syllables, const float* probs,
     if (sum <= 0.0f) sum = 1.0f;
 
     /*
-     * Largest-remainder method: floor each ideal count (min 1), then
-     * distribute remaining slots to candidates with the largest fractional
-     * parts. Guarantees total == total_slots and every count >= 1, even
-     * when roundf() would overshoot.
+     * Largest-remainder method: floor each ideal count (no forced minimum
+     * yet), then distribute the slots left over by flooring to the
+     * candidates with the largest fractional parts. Since ideal[i] sums to
+     * exactly total_slots, floor(ideal[i]) can only sum to <= total_slots,
+     * so this pass alone can never overflow total_slots.
      */
     int*   counts = (int*)  calloc((size_t)count, sizeof(int));
     float* fracs  = (float*)calloc((size_t)count, sizeof(float));
@@ -61,13 +62,8 @@ MeteorDist* meteor_build_dist(const char** syllables, const float* probs,
         float p     = probs[i] / sum;
         float ideal = p * (float)dist->total_slots;
         counts[i]   = (int)floorf(ideal);
-        if (counts[i] < 1) {
-            fracs[i]  = ideal - 1.0f; /* negative: already forced up, penalise in LR */
-            counts[i] = 1;
-        } else {
-            fracs[i] = ideal - (float)counts[i];
-        }
-        total += counts[i];
+        fracs[i]    = ideal - (float)counts[i];
+        total      += counts[i];
     }
 
     while (total < dist->total_slots) {
@@ -80,6 +76,27 @@ MeteorDist* meteor_build_dist(const char** syllables, const float* probs,
     }
     free(fracs);
 
+    /*
+     * Guarantee every candidate keeps at least 1 slot (so it stays
+     * reachable in the encoder's r-based slot lookup) by stealing from the
+     * largest allocations — this only moves slots around, so it can never
+     * push the total above total_slots the way an unconditional "min 1"
+     * forced *before* the largest-remainder pass could (that ordering let
+     * several near-zero-probability candidates each grab a slot the
+     * flooring pass had already spent, overflowing total_slots and leaving
+     * the tail candidates with out-of-range/negative-width slots).
+     */
+    for (int i = 0; i < count; i++) {
+        while (counts[i] < 1) {
+            int donor = 0;
+            for (int j = 1; j < count; j++)
+                if (counts[j] > counts[donor]) donor = j;
+            if (counts[donor] <= 1) break; /* count > total_slots: no spare slots left */
+            counts[donor]--;
+            counts[i]++;
+        }
+    }
+
     int cursor = 0;
     for (int i = 0; i < count; i++) {
         strncpy(dist->slots[i].text, syllables[i], sizeof(dist->slots[i].text) - 1);
@@ -91,11 +108,6 @@ MeteorDist* meteor_build_dist(const char** syllables, const float* probs,
         cursor += counts[i];
     }
     free(counts);
-
-    /* safety clamp: should be a no-op after correct LR allocation */
-    dist->slots[count - 1].slot_end   = dist->total_slots - 1;
-    dist->slots[count - 1].slot_count =
-        dist->total_slots - dist->slots[count - 1].slot_start;
 
     return dist;
 }
@@ -306,4 +318,54 @@ int meteor_draw_clause_end(MeteorPRNG* prng, const ClauseState* state)
     if (state->phrases_in_sentence + 1 < CLAUSE_END_MIN_PHRASES) return 0;
     if (state->phrases_in_sentence + 1 >= CLAUSE_END_MAX_PHRASES) return 1;
     return v == 0;
+}
+
+/* ── digression axis selection ───────────────────────────────────────────── */
+
+static int digression_axis_is_recent(const DigressionAxisHistory* hist, DigressionAxis a)
+{
+    if (!hist) return 0;
+    for (int i = 0; i < hist->count; i++)
+        if (hist->recent[i] == a) return 1;
+    return 0;
+}
+
+DigressionAxis meteor_draw_digression_axis(MeteorPRNG* prng,
+                                            const DigressionAxisHistory* hist)
+{
+    DigressionAxis a;
+    int attempts = 0;
+    do {
+        a = (DigressionAxis)(prng_next_bits(prng, 3) % DIGRESS_AXIS_COUNT);
+        attempts++;
+    } while (digression_axis_is_recent(hist, a) && attempts < DIGRESS_AXIS_MAX_REDRAWS);
+    return a;
+}
+
+void meteor_digression_axis_history_push(DigressionAxisHistory* hist, DigressionAxis a)
+{
+    if (!hist) return;
+    if (hist->count < DIGRESS_AXIS_HISTORY) {
+        hist->recent[hist->count++] = a;
+    } else {
+        memmove(hist->recent, hist->recent + 1,
+                (size_t)(DIGRESS_AXIS_HISTORY - 1) * sizeof(DigressionAxis));
+        hist->recent[DIGRESS_AXIS_HISTORY - 1] = a;
+    }
+}
+
+/* ── digression mode selection ───────────────────────────────────────────── */
+
+int meteor_draw_digress_mode(MeteorPRNG* prng, const DigressionState* state)
+{
+    uint32_t v = prng_next_bits(prng, DIGRESS_DRAW_BITS); /* always drawn */
+
+    if (state->topic_sentences_completed < DIGRESS_MIN_TOPIC_SENTENCES) return 0;
+    if (state->last_was_digression) return 0; /* cap digression at one hop */
+    return v == 0;
+}
+
+int meteor_draw_digression_variant(MeteorPRNG* prng)
+{
+    return (int)(prng_next_bits(prng, DIGRESS_VARIANT_DRAW_BITS) % DIGRESS_VARIANT_COUNT);
 }
