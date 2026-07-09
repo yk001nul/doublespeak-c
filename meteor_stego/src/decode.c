@@ -116,11 +116,6 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
         return NULL;
     }
 
-    /* Mirror encode.c: begin from a clean server-side KV cache so encode/decode
-       cache boundaries stay in lockstep when prompt caching is enabled. No-op
-       when caching is off. */
-    llm_client_erase_slot(ctx->llm);
-
     uint8_t* recovered_bits = (uint8_t*)calloc(MAX_RECOVERED_BITS, 1);
     size_t   rb_count       = 0;
 

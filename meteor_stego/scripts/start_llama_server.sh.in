@@ -63,7 +63,6 @@ echo "  log:     $LOGFILE"
     --threads "$NUM_THREADS" \
     --parallel 1            \
     --no-cont-batching      \
-    --slots                 \
     --seed    "$SEED"       \
     --temp    0.0           \
     --ctx-size 2048         \

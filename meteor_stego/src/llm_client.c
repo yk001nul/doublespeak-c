@@ -38,28 +38,6 @@ static int growbuf_append(GrowBuf* g, const char* data, size_t n)
     return 0;
 }
 
-/* Read the METEOR_PROMPT_CACHE env var: enabled by "1"/"true"/"yes"/"on".
-   Shared by both HTTP backends. Off (0) by default — see LLMClient.cache_prompt. */
-static int env_prompt_cache_enabled(void)
-{
-    const char* v = getenv("METEOR_PROMPT_CACHE");
-    if (!v || !*v) return 0;
-    return (v[0] == '1' || v[0] == 't' || v[0] == 'T' ||
-            v[0] == 'y' || v[0] == 'Y' || v[0] == 'o' || v[0] == 'O');
-}
-
-/* Set the prompt-cache fields on a /completion request body. When caching is
-   off (default) this sends "cache_prompt": false — byte-identical to the prior
-   behaviour, so determinism is unchanged. When on, it also pins "id_slot" so
-   every step reuses the same slot's KV cache (requires the server to run
-   single-slot, --parallel 1). Keeps all four request builders consistent. */
-static void add_cache_opts(cJSON* req, const LLMClient* client)
-{
-    cJSON_AddBoolToObject(req, "cache_prompt", client->cache_prompt ? 1 : 0);
-    if (client->cache_prompt)
-        cJSON_AddNumberToObject(req, "id_slot", client->id_slot);
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
  * BACKEND: WinHTTP
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -123,8 +101,6 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
-    c->cache_prompt   = env_prompt_cache_enabled();
-    c->id_slot        = 0;
     c->curl_handle    = NULL; /* unused in WinHTTP backend */
 
     struct LLMClientImpl* impl = (struct LLMClientImpl*)calloc(1, sizeof(struct LLMClientImpl));
@@ -299,8 +275,6 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
-    c->cache_prompt   = env_prompt_cache_enabled();
-    c->id_slot        = 0;
     c->curl_handle    = curl_easy_init();
     if (!c->curl_handle) { free(c); return NULL; }
     return c;
@@ -847,7 +821,7 @@ char* llm_client_get_digression_answer(LLMClient* client, const char* full_conte
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    add_cache_opts(req, client);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     cJSON* stop = cJSON_CreateArray();
     cJSON_AddItemToArray(stop, cJSON_CreateString("\n"));
     cJSON_AddItemToObject(req, "stop", stop);
@@ -1054,7 +1028,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    add_cache_opts(req, client);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1091,7 +1065,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    add_cache_opts(req, client);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1148,7 +1122,7 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    add_cache_opts(req, client);
+    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1175,25 +1149,6 @@ void llm_response_free(LLMResponse* resp)
     if (!resp) return;
     free(resp->candidates);
     free(resp);
-}
-
-int llm_client_erase_slot(LLMClient* client)
-{
-    if (!client) return 0;
-    if (!client->cache_prompt) return 1;   /* nothing cached to clear */
-
-    char path[64];
-    snprintf(path, sizeof(path), "/slots/%d", client->id_slot);
-    char* raw = HTTP_POST(client, path, "{\"action\":\"erase\"}");
-    if (!raw) return 0;
-    /* A successful erase response echoes the slot id; treat any of the
-       expected markers as success and anything else (e.g. a 501 body when the
-       endpoint is disabled) as failure. */
-    int ok = (strstr(raw, "id_slot") != NULL ||
-              strstr(raw, "erase")   != NULL ||
-              strstr(raw, "success") != NULL);
-    free(raw);
-    return ok;
 }
 
 int llm_client_health(LLMClient* client)

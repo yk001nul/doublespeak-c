@@ -17,37 +17,11 @@ typedef struct {
     char  base_url[256];
     int   timeout_ms;
     int   max_candidates;
-    /*
-     * Prompt-cache toggle (read from the METEOR_PROMPT_CACHE env var at
-     * create time; 0 = off, the deterministic-safe default). When on, every
-     * /completion request sets "cache_prompt": true and pins "id_slot" so
-     * llama-server reuses the KV cache for the common (growing) prompt prefix
-     * across steps instead of reprocessing it from scratch — turning per-run
-     * prefill from O(steps^2) into ~O(steps). Determinism then requires the
-     * server to run single-slot (--parallel 1) and the slot to be erased at
-     * the start of each encode/decode run (llm_client_erase_slot), so encode
-     * and decode evolve byte-identical cache state from an identical empty
-     * start. OFF by default because that determinism property must be
-     * confirmed on the target model via the determinism/roundtrip ctests
-     * before it can be trusted (see CLAUDE.md "Determinism constraint").
-     */
-    int   cache_prompt;
-    int   id_slot;         /* llama-server slot pinned when cache_prompt is on */
     void* curl_handle;     /* CURL* — opaque to callers */
 } LLMClient;
 
 LLMClient*   llm_client_create(const char* base_url, int max_candidates, int timeout_ms);
 void         llm_client_destroy(LLMClient* client);
-
-/*
- * Erase the KV cache for the pinned slot (POST /slots/{id_slot} with body
- * {"action":"erase"}). Called once at the start of each encode/decode run
- * when cache_prompt is enabled, so both sides begin from an identical empty
- * cache and their per-step cache boundaries stay in lockstep. No-op returning
- * 1 when cache_prompt is off. Returns 1 on success (or when disabled), 0 if
- * the request fails or the endpoint is unavailable.
- */
-int          llm_client_erase_slot(LLMClient* client);
 
 /*
  * Build an embellishment preamble string from a style id and topic text.
