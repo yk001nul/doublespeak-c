@@ -38,6 +38,28 @@ static int growbuf_append(GrowBuf* g, const char* data, size_t n)
     return 0;
 }
 
+/* Read the METEOR_PROMPT_CACHE env var: enabled by "1"/"true"/"yes"/"on".
+   Shared by both HTTP backends. Off (0) by default — see LLMClient.cache_prompt. */
+static int env_prompt_cache_enabled(void)
+{
+    const char* v = getenv("METEOR_PROMPT_CACHE");
+    if (!v || !*v) return 0;
+    return (v[0] == '1' || v[0] == 't' || v[0] == 'T' ||
+            v[0] == 'y' || v[0] == 'Y' || v[0] == 'o' || v[0] == 'O');
+}
+
+/* Set the prompt-cache fields on a /completion request body. When caching is
+   off (default) this sends "cache_prompt": false — byte-identical to the prior
+   behaviour, so determinism is unchanged. When on, it also pins "id_slot" so
+   every step reuses the same slot's KV cache (requires the server to run
+   single-slot, --parallel 1). Keeps all four request builders consistent. */
+static void add_cache_opts(cJSON* req, const LLMClient* client)
+{
+    cJSON_AddBoolToObject(req, "cache_prompt", client->cache_prompt ? 1 : 0);
+    if (client->cache_prompt)
+        cJSON_AddNumberToObject(req, "id_slot", client->id_slot);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * BACKEND: WinHTTP
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -54,6 +76,13 @@ struct LLMClientImpl {
     INTERNET_PORT port;
     int timeout_ms;
     int max_candidates;
+    /* Persistent session + connection reused across every POST (HTTP
+       keep-alive). Opening/closing these per request added a TCP connect +
+       teardown to every LLM step; llama-server keeps the connection alive, so
+       we open once and only allocate a fresh request handle per call. Both are
+       lazily (re)opened by winhttp_ensure_conn() and torn down on destroy. */
+    HINTERNET hSession;
+    HINTERNET hConnect;
 };
 
 static void parse_url(const char* url, wchar_t* host, size_t hlen,
@@ -94,6 +123,8 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
+    c->cache_prompt   = env_prompt_cache_enabled();
+    c->id_slot        = 0;
     c->curl_handle    = NULL; /* unused in WinHTTP backend */
 
     struct LLMClientImpl* impl = (struct LLMClientImpl*)calloc(1, sizeof(struct LLMClientImpl));
@@ -101,6 +132,8 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
     parse_url(base_url, impl->host, 256, &impl->port, NULL, 0);
     impl->timeout_ms     = c->timeout_ms;
     impl->max_candidates = c->max_candidates;
+    impl->hSession       = NULL;
+    impl->hConnect       = NULL;
     c->curl_handle = impl; /* store impl pointer here */
     return c;
 }
@@ -108,34 +141,58 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
 void llm_client_destroy(LLMClient* client)
 {
     if (!client) return;
+    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
+    if (impl) {
+        if (impl->hConnect) WinHttpCloseHandle(impl->hConnect);
+        if (impl->hSession) WinHttpCloseHandle(impl->hSession);
+    }
     free(client->curl_handle);
     free(client);
 }
 
-static char* winhttp_post(LLMClient* client, const char* path_suffix, const char* body)
+/* Lazily open the persistent session + connection, reusing them if already
+   open. Returns 0 on success, -1 on failure (handles left NULL). */
+static int winhttp_ensure_conn(struct LLMClientImpl* impl)
 {
-    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
-
-    HINTERNET hSession = WinHttpOpen(L"meteor-stego/1.0",
+    if (impl->hSession && impl->hConnect) return 0;
+    if (!impl->hSession) {
+        impl->hSession = WinHttpOpen(L"meteor-stego/1.0",
                                      WINHTTP_ACCESS_TYPE_NO_PROXY,
                                      WINHTTP_NO_PROXY_NAME,
                                      WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return NULL;
+        if (!impl->hSession) return -1;
+    }
+    if (!impl->hConnect) {
+        impl->hConnect = WinHttpConnect(impl->hSession, impl->host, impl->port, 0);
+        if (!impl->hConnect) return -1;
+    }
+    return 0;
+}
 
-    HINTERNET hConnect = WinHttpConnect(hSession, impl->host, impl->port, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return NULL; }
+/* Drop the persistent connection (e.g. after a send/receive error) so the
+   next call reopens it. The session is kept. */
+static void winhttp_reset_conn(struct LLMClientImpl* impl)
+{
+    if (impl->hConnect) { WinHttpCloseHandle(impl->hConnect); impl->hConnect = NULL; }
+}
+
+/* One send/receive attempt over the persistent connection. Returns the
+   response body (caller frees) on success; NULL on any failure, with
+   *out_conn_err set to 1 if the failure looks connection-level (so the caller
+   can drop + reopen the connection and retry once). */
+static char* winhttp_post_once(struct LLMClientImpl* impl, const char* path_suffix,
+                               const char* body, int* out_conn_err)
+{
+    *out_conn_err = 0;
+    if (winhttp_ensure_conn(impl) != 0) { *out_conn_err = 1; return NULL; }
 
     wchar_t wpath[256];
     MultiByteToWideChar(CP_UTF8, 0, path_suffix, -1, wpath, 256);
 
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", wpath,
+    HINTERNET hRequest = WinHttpOpenRequest(impl->hConnect, L"POST", wpath,
                                             NULL, WINHTTP_NO_REFERER,
                                             WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return NULL;
-    }
+    if (!hRequest) { *out_conn_err = 1; return NULL; }
 
     DWORD conn_timeout = (DWORD)impl->timeout_ms;
     /* llama-server holds the connection open until generation completes, so the
@@ -152,8 +209,7 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
                                    (DWORD)strlen(body), 0);
     if (!sent || !WinHttpReceiveResponse(hRequest, NULL)) {
         WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
+        *out_conn_err = 1;   /* stale keep-alive socket — reopen and retry */
         return NULL;
     }
 
@@ -167,9 +223,22 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
     } while (bytes_read > 0);
 
     WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
     return gb.buf; /* caller frees */
+}
+
+static char* winhttp_post(LLMClient* client, const char* path_suffix, const char* body)
+{
+    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
+
+    int conn_err = 0;
+    char* resp = winhttp_post_once(impl, path_suffix, body, &conn_err);
+    if (!resp && conn_err) {
+        /* A persistent keep-alive socket can be closed by the server between
+           calls; drop it and retry once from a fresh connection. */
+        winhttp_reset_conn(impl);
+        resp = winhttp_post_once(impl, path_suffix, body, &conn_err);
+    }
+    return resp;
 }
 
 static int winhttp_health(LLMClient* client)
@@ -230,6 +299,8 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
             sizeof(c->base_url) - 1);
     c->max_candidates = max_candidates > 0 ? max_candidates : 6;
     c->timeout_ms     = timeout_ms > 0     ? timeout_ms     : 30000;
+    c->cache_prompt   = env_prompt_cache_enabled();
+    c->id_slot        = 0;
     c->curl_handle    = curl_easy_init();
     if (!c->curl_handle) { free(c); return NULL; }
     return c;
@@ -261,6 +332,10 @@ static char* curl_post(LLMClient* client, const char* path_suffix, const char* b
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &gb);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,     (long)client->timeout_ms);
+    /* Keep the TCP connection alive between steps. curl_easy_reset() above wipes
+       per-transfer options but the easy handle's connection cache survives, so
+       the socket to llama-server is reused rather than reconnected each call. */
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_slist_free_all(headers);
@@ -772,7 +847,7 @@ char* llm_client_get_digression_answer(LLMClient* client, const char* full_conte
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
+    add_cache_opts(req, client);
     cJSON* stop = cJSON_CreateArray();
     cJSON_AddItemToArray(stop, cJSON_CreateString("\n"));
     cJSON_AddItemToObject(req, "stop", stop);
@@ -979,7 +1054,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
+    add_cache_opts(req, client);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1016,7 +1091,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
+    add_cache_opts(req, client);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1073,7 +1148,7 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
-    cJSON_AddBoolToObject  (req, "cache_prompt", 0);
+    add_cache_opts(req, client);
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
@@ -1100,6 +1175,25 @@ void llm_response_free(LLMResponse* resp)
     if (!resp) return;
     free(resp->candidates);
     free(resp);
+}
+
+int llm_client_erase_slot(LLMClient* client)
+{
+    if (!client) return 0;
+    if (!client->cache_prompt) return 1;   /* nothing cached to clear */
+
+    char path[64];
+    snprintf(path, sizeof(path), "/slots/%d", client->id_slot);
+    char* raw = HTTP_POST(client, path, "{\"action\":\"erase\"}");
+    if (!raw) return 0;
+    /* A successful erase response echoes the slot id; treat any of the
+       expected markers as success and anything else (e.g. a 501 body when the
+       endpoint is disabled) as failure. */
+    int ok = (strstr(raw, "id_slot") != NULL ||
+              strstr(raw, "erase")   != NULL ||
+              strstr(raw, "success") != NULL);
+    free(raw);
+    return ok;
 }
 
 int llm_client_health(LLMClient* client)

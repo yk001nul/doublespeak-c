@@ -36,6 +36,12 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
         return NULL;
     }
 
+    /* Start this run from a clean server-side KV cache so that, when prompt
+       caching is enabled, encode and decode evolve byte-identical cache state
+       from an identical empty start (see llm_client_erase_slot). No-op when
+       caching is off, so determinism is unchanged in the default configuration. */
+    llm_client_erase_slot(ctx->llm);
+
     /* build style preamble (NULL in legacy mode) */
     char* preamble = llm_client_build_preamble((int)ctx->style, starting_context);
 
