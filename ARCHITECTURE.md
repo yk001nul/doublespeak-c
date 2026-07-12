@@ -552,7 +552,9 @@ Start the server with:
   --n-predict 256 \
   --temp 0.0 \
   --seed 42 \
-  --threads 1 \
+  --threads 1 \      # or $METEOR_NUM_THREADS — must match on encoder AND decoder
+  --parallel 1 \
+  --no-cont-batching \
   --no-mmap         # avoids OS-level non-determinism on some platforms
 ```
 
@@ -562,7 +564,9 @@ Start the server with:
 |---|---|---|
 | `--temp` | `0.0` | Greedy logit ordering; note: we read logprobs, not sampled tokens |
 | `--seed` | fixed int | Reproducible sampling internals |
-| `--threads` | `1` | Eliminates floating-point reordering from multithreaded reduction |
+| `--threads` | same on both sides (default `1`) | Float reduction order is reproducible for a *fixed* thread count; a mismatch diverges. Start scripts read `METEOR_NUM_THREADS` |
+| `--parallel` | `1` | Single decode slot — no slot-assignment variance |
+| `--no-cont-batching` | — | Continuous batching accumulates scheduler state across requests that drifts logits (observed on ≥3B models) |
 | `--no-mmap` | — | Avoids memory-mapped file caching differences across platforms |
 | `--ctx-size` | ≥ 2048 | Enough context for typical covertext |
 
@@ -918,7 +922,9 @@ be wrong.
 |---|---|
 | Model file | Identical GGUF file (verify with SHA-256) |
 | Quantisation | Same quantisation level (e.g. both Q4_K_M or both F16) |
-| Inference threads | `n_threads = 1` (eliminates reduction order non-determinism) |
+| Inference threads | Identical `--threads` count on both sides (`METEOR_NUM_THREADS`, default 1). Reproducible for a fixed count; a mismatch causes reduction-order divergence |
+| Server slots/batching | `--parallel 1 --no-cont-batching` — continuous batching accumulates scheduler state across requests that drifts logits (observed on ≥3B models) |
+| Prompt caching | `"cache_prompt": false` on every request (set by `llm_client.c`); KV reuse makes output depend on the server's prior request history |
 | Temperature | `0.0` (note: we read logprobs not sampled tokens; still set this) |
 | Seed | Same fixed integer (e.g. `42`) |
 | Context format | Byte-identical prompt strings (same starting_context, same separators) |
@@ -1381,6 +1387,7 @@ LLAMA_SERVER="${SCRIPT_DIR}/bin/llama-server"
 MODEL_PATH="${1:-@METEOR_MODEL_PATH@}"
 PORT="@METEOR_LLM_PORT@"
 SEED="@METEOR_LLM_SEED@"
+NUM_THREADS="${METEOR_NUM_THREADS:-1}"
 LOGFILE="${SCRIPT_DIR}/llama_server.log"
 PIDFILE="${SCRIPT_DIR}/llama_server.pid"
 
@@ -1423,14 +1430,16 @@ echo "Starting llama-server..."
 echo "  model:   $MODEL_PATH"
 echo "  port:    $PORT"
 echo "  seed:    $SEED"
-echo "  threads: 1 (required for determinism)"
+echo "  threads: $NUM_THREADS  (must match on encoder AND decoder machines)"
 echo "  log:     $LOGFILE"
 
 "$LLAMA_SERVER"           \
     --model   "$MODEL_PATH" \
     --port    "$PORT"       \
     --host    127.0.0.1     \
-    --threads 1             \
+    --threads "$NUM_THREADS" \
+    --parallel 1            \
+    --no-cont-batching      \
     --seed    "$SEED"       \
     --temp    0.0           \
     --ctx-size 2048         \
@@ -1468,6 +1477,8 @@ set MODEL_PATH=%~1
 if "%MODEL_PATH%"=="" set MODEL_PATH=@METEOR_MODEL_PATH@
 set PORT=@METEOR_LLM_PORT@
 set SEED=@METEOR_LLM_SEED@
+set NUM_THREADS=%METEOR_NUM_THREADS%
+if "%NUM_THREADS%"=="" set NUM_THREADS=1
 set LOGFILE=%SCRIPT_DIR%llama_server.log
 
 if not exist "%LLAMA_SERVER%" (
@@ -1485,13 +1496,15 @@ echo Starting llama-server...
 echo   model:   %MODEL_PATH%
 echo   port:    %PORT%
 echo   seed:    %SEED%
-echo   threads: 1
+echo   threads: %NUM_THREADS%  (must match on encoder AND decoder machines)
 
 start /B "" "%LLAMA_SERVER%" ^
     --model   "%MODEL_PATH%" ^
     --port    %PORT%          ^
     --host    127.0.0.1       ^
-    --threads 1               ^
+    --threads %NUM_THREADS%   ^
+    --parallel 1              ^
+    --no-cont-batching        ^
     --seed    %SEED%          ^
     --temp    0.0             ^
     --ctx-size 2048           ^

@@ -122,7 +122,7 @@ meteor_stego\out\build\x64-debug\start_llama_server.bat  path\to\model.gguf
 cmake --build meteor_stego/out/build/x64-debug --target server_health
 ```
 
-Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap`. The start scripts also pass `--parallel 1 --no-cont-batching` (single decode slot, no cross-request batching — determinism hardening). See `ARCHITECTURE.md §6` for the full determinism checklist.
+Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap` (`METEOR_NUM_THREADS` overrides the thread count — see "Performance tuning" below; encoder and decoder must match). The start scripts also pass `--parallel 1 --no-cont-batching` (single decode slot, no cross-request batching — determinism hardening). See `ARCHITECTURE.md §6` for the full determinism checklist.
 
 ## Performance tuning (`imp/perf-opt-2` branch)
 
@@ -291,7 +291,7 @@ sampling primitive for it the way `meteor_estimate_capacity()` gives encode.
 
 This is the most critical operational requirement. A single-bit difference in LLM probability distributions between encoder and decoder corrupts the entire recovered message. Both sides must use:
 - The **same GGUF model file** (verify SHA-256 with `scripts/verify_model.sh`)
-- `--threads 1` (eliminates float reduction-order non-determinism)
+- The **same `--threads` count** on encoder and decoder (`METEOR_NUM_THREADS`, default 1 — safest cross-machine). llama.cpp's CPU backend is reproducible for a *fixed* thread count; a mismatch causes float reduction-order divergence. See "Performance tuning" above.
 - CPU-only inference (`--gpu-layers 0`); GPU float rounding differs across vendors
 - A pinned llama.cpp git tag (`LLAMA_CPP_GIT_TAG` in CMake)
 - `"cache_prompt": false` on every `/completion` request body (`llm_client.c`) — llama-server's default `cache_prompt: true` reuses KV cache across unrelated requests sharing the same slot, which can change a request's output depending on the server's prior request history even with identical prompt/seed/temp/threads. Discovered via style-mode `styled_encode` failures that were only reproducible after the server had processed a long unrelated request history (see the style-mode Status note above) — confirmed fixed by disabling cache reuse outright.
