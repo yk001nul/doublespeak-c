@@ -276,6 +276,8 @@ Useful links:
 
 ## Sample outputs
 
+**Stale — predates `imp/text-coherence-opt`:** the samples below were captured before the `imp/text-coherence-opt` coherence changes (de-themed axis examples + `CLAUSE_END_MAX_PHRASES` lowered to `3`) and must be regenerated from a fresh `styled_encode` ctest run on that branch before being trusted as representative.
+
 Real covertext samples from a verified encode/decode round trip, one per style, all recovering the original message (`hi`) exactly:
 
 | Style | Topic (starting context) | Message | Covertext output |

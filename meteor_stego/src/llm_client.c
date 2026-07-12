@@ -602,42 +602,57 @@ static char* build_word_prompt(const char* preamble, const char* ctx, int n,
    candidate's phrase to start with one of these exact words via GBNF, so
    the wording states it as a requirement rather than "typically" — the
    model has no way to produce a bare new-verb clause instead. */
+/* NOTE ON EXAMPLES: the parenthetical illustrations here are deliberately
+   NOT concrete phrases. An earlier revision used domain-specific examples
+   ("by turning the key", "to the office", "to meet the manager", "to avoid
+   the traffic") — at temp=0.0 those few-shot examples dominated the model's
+   output domain and leaked commute/office vocabulary into EVERY style
+   regardless of the actual topic (a hiking blog produced "carpooling" and
+   "the department head"). The examples now show only grammatical SHAPE via
+   angle-bracket slots, and each phase explicitly tells the model to draw its
+   vocabulary from the topic and the sentence so far. Keep any future example
+   content-neutral, or it will re-introduce topic drift. */
 static const char* STYLE_QUESTION_PHASE[STYLE_Q_COUNT] = {
     /* STYLE_Q_HOW */
     "Continue the sentence above by answering HOW the subject does this — "
-    "the method, tool, or manner involved. Every candidate MUST open with "
+    "the method, tool, or manner involved, using vocabulary drawn from the "
+    "topic and the sentence so far. Every candidate MUST open with "
     "\"by\", \"through\", or \"using\", followed by its next 1-4 words "
-    "(\"by turning the key\"). Agree in tense and subject with the text "
+    "(shape: \"by <the means>\"). Agree in tense and subject with the text "
     "that precedes it — do NOT switch subject or start a new sentence.",
 
     /* STYLE_Q_WHERE */
     "Continue the sentence above by answering WHERE this is happening — a "
-    "destination, origin, or place. Every candidate MUST open with \"to\", "
+    "destination, origin, or place relevant to the topic and the sentence "
+    "so far. Every candidate MUST open with \"to\", "
     "\"toward\", \"from\", or \"at\", followed by its next 1-4 words "
-    "(\"to the office\"). Agree in tense and subject with the text that "
-    "precedes it — do NOT switch subject or start a new sentence.",
+    "(shape: \"to <the place>\"). Agree in tense and subject with the text "
+    "that precedes it — do NOT switch subject or start a new sentence.",
 
     /* STYLE_Q_WHO_MEET */
     "Continue the sentence above by answering WHO the subject intends to "
-    "meet, involve, or work with as part of this. Every candidate MUST "
+    "meet, involve, or work with as part of this — a person or group that "
+    "fits the topic and the sentence so far. Every candidate MUST "
     "open with \"to meet\", \"to join\", or \"with\", followed by its next "
-    "1-4 words naming a person or group (\"to meet the manager\"). Agree "
-    "in tense and subject with the text that precedes it — do NOT switch "
-    "subject or start a new sentence.",
+    "1-4 words naming that person or group (shape: \"to meet <the group>\"). "
+    "Agree in tense and subject with the text that precedes it — do NOT "
+    "switch subject or start a new sentence.",
 
     /* STYLE_Q_WHO_AVOID */
     "Continue the sentence above by answering WHO or WHAT the subject "
-    "wants to avoid, delay, or steer clear of while doing this. Every "
+    "wants to avoid, delay, or steer clear of while doing this — something "
+    "that fits the topic and the sentence so far. Every "
     "candidate MUST open with \"to avoid\", \"before\", or \"while "
-    "avoiding\", followed by its next 1-4 words (\"to avoid the "
-    "traffic\"). Agree in tense and subject with the text that precedes "
+    "avoiding\", followed by its next 1-4 words (shape: \"to avoid <the "
+    "obstacle>\"). Agree in tense and subject with the text that precedes "
     "it — do NOT switch subject or start a new sentence.",
 
     /* STYLE_Q_WHY */
     "Continue the sentence above by answering WHY the subject is doing "
-    "this — the reason or goal behind it. Every candidate MUST open with "
+    "this — the reason or goal behind it, grounded in the topic and the "
+    "sentence so far. Every candidate MUST open with "
     "\"to\", \"in order to\", or \"because\", followed by its next 1-4 "
-    "words (\"to make it to the meeting\"). Agree in tense and subject "
+    "words (shape: \"to <the goal>\"). Agree in tense and subject "
     "with the text that precedes it — do NOT switch subject or start a "
     "new sentence.",
 };
@@ -889,9 +904,10 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
         ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
           "start with an explicit subject — a pronoun (he/she/they/it) or a "
-          "determiner + noun (\"the team\", \"his car\", \"this plan\") — "
-          "immediately followed by its verb. Do NOT start with a preposition, a "
-          "bare verb, or a dangling phrase with no subject.";
+          "determiner + noun drawn from the topic (shape: \"the <noun>\", "
+          "\"this <noun>\") — immediately followed by its verb. Do NOT start "
+          "with a preposition, a bare verb, or a dangling phrase with no "
+          "subject.";
 
     char bl_clause[640] = {0};
     if (bl_len > 0)

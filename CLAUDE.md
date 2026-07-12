@@ -168,7 +168,7 @@ Style mode (`MeteorConfig.style`, one of `MeteorStyle`) replaces syllable-level 
 
 Per-step PRNG draws, in fixed order:
 1. `meteor_draw_style_question()` — picks one of 5 `StyleQuestion` axes (HOW/WHERE/WHO_MEET/WHO_AVOID/WHY) that all 8 candidates for this step answer, giving them a shared semantic axis instead of open-ended "continue naturally" (which produced low-quality filler candidates). Grammar-hardened via `build_phrase_grammar` in `llm_client.c` so each candidate's connector (e.g. "by ...", "to ...") is enforced by GBNF, not just prompted.
-2. `meteor_draw_clause_end()` — decides whether the phrase about to be generated ends the current sentence (append a literal `.`, reset `subject_anchor`, start fresh). Forced to continue below `CLAUSE_END_MIN_PHRASES=2` and forced to end at `CLAUSE_END_MAX_PHRASES=6`, but the PRNG bits are always drawn regardless of which bound fires, to keep stream position identical between encode/decode.
+2. `meteor_draw_clause_end()` — decides whether the phrase about to be generated ends the current sentence (append a literal `.`, reset `subject_anchor`, start fresh). Forced to continue below `CLAUSE_END_MIN_PHRASES=2` and forced to end at `CLAUSE_END_MAX_PHRASES=3`, but the PRNG bits are always drawn regardless of which bound fires, to keep stream position identical between encode/decode.
 3. `meteor_draw_digress_mode()` / `meteor_draw_digression_axis()` / `meteor_draw_digression_variant()` — decide whether the sentence about to be opened digresses onto a secondary entity instead of paraphrasing the topic, which `DigressionAxis` it asks about, and which of `DIGRESS_VARIANT_COUNT` phrasings of that axis's question to use. See "Topic subordination (digression)" below.
 4. The beta-bit slot-selection draw inside `meteor_encode_step`/decode's mirror, same as syllable mode.
 
@@ -193,6 +193,8 @@ Known remaining rough edge (not a correctness bug, deferred): subject placement 
 Not merged to `main` yet.
 
 ### Sample style-mode outputs (verified 2026-07-07, commit `2bfb42f`)
+
+**Stale — predates `imp/text-coherence-opt`:** the samples below were captured before the `imp/text-coherence-opt` prompt/coherence changes (de-themed axis examples in `llm_client.c`'s phrase prompts + `CLAUSE_END_MAX_PHRASES` lowered to `3`) and must be regenerated from a fresh `styled_encode` ctest run on that branch before being trusted as representative.
 
 All four covertexts below successfully round-tripped (`meteor_decode` recovered the exact original message) in the verification ctest run. Kept here for reference so the styles' output character can be checked without re-running the (slow, LLM-backed) test suite — only re-run `styled_encode` if a change could plausibly affect phrase/candidate generation, grammar, or the digression logic.
 
