@@ -140,7 +140,14 @@ void meteor_style_question_history_push(StyleQuestionHistory* hist, StyleQuestio
  * min/max phrase-per-sentence bounds.
  */
 #define CLAUSE_END_MIN_PHRASES 2  /* never end right after the opener alone */
-#define CLAUSE_END_MAX_PHRASES 6  /* force an end so run-ons stay bounded */
+#define CLAUSE_END_MAX_PHRASES 2  /* force an end so run-ons stay bounded; lowered
+                                     from 6 (via 3) — stacking PRNG-selected
+                                     prepositional modifiers per sentence produced
+                                     word-salad ("to avoid X to Y by Z with W").
+                                     At 2 a sentence is opener + at most one
+                                     modifier, so unrelated modifiers can't pile
+                                     up; also re-anchors the subject to the topic
+                                     more often. */
 #define CLAUSE_END_DRAW_BITS   3  /* v==0 out of 8 possible values ⇒ ~1/8 chance/step */
 
 typedef struct {
