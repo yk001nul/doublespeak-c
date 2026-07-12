@@ -359,27 +359,80 @@ static const char* NEW_WORD_GRAMMAR =
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
 
-/* Opening-step grammar: same JSON shape as the old free-form phrase
- * grammar, but the phrase is forced to start with a pronoun or a
- * determiner+noun ("the team", "his car") before any other word. This is
- * the same class of fix as STYLE_QUESTION_CONNECTOR_GRAMMAR below: the
- * soft prompt instruction ("every candidate MUST start with an explicit
- * subject") was frequently ignored by the model at temp=0.0, producing
- * bare-verb sentence openers ("starts his car...", "hits the road...")
- * whenever a clause-end reset started a fresh sentence mid-covertext.
- * Subject-hood itself isn't a closed vocabulary (unlike the connector
- * case), so this can't fully enumerate valid subjects the way the
- * connector grammar does — but a bare verb is never a pronoun or a
- * determiner, so gating the first word on this set closes the loophole
- * even though it doesn't cover every grammatically valid subject (e.g. a
- * bare proper noun like "sarah" without a determiner is also excluded). */
+/* Opening-step grammar: forces every opener to be "subject VERB ..." so a
+ * fresh sentence is always a real clause, not a subject glued straight to a
+ * prepositional fragment.
+ *
+ * History: an earlier revision forced only a subject-first opener
+ * (`phrase ::= subject (" " word)+`, subject = pronoun OR determiner+noun) to
+ * kill bare-verb openers ("starts his car..."). That fixed the missing-SUBJECT
+ * case but not the missing-VERB case: `(" " word)+` let the model slide
+ * straight from the subject into a preposition, producing verbless fragments
+ * ("that to office.", "his car to the office with the department head."). This
+ * revision requires a `verb` token immediately after the subject.
+ *
+ * Subject is now pronoun-ONLY (the determiner+noun alternative was removed).
+ * Forcing a verb after a determiner+noun subject produced two new failure
+ * modes, both seen in eyeball encodes: wrong-agent nonsense when the noun
+ * isn't a plausible agent ("the mountains climb", "his weekend explores"), and
+ * — because many common verbs are also nouns — a noun-phrase read when the
+ * verb slot lands on a homograph ("the quarterly report ..." parses as
+ * subject "the quarterly" + verb "report" but reads as the noun phrase). A
+ * pronoun subject has neither problem: "he/she/it/they + verb" is an
+ * unambiguous clause. Determiner openers like "the team presents" are lost,
+ * but they reappear as "it/they present", which reads just as well.
+ *
+ * Verbs are an open class, so — unlike pronouns/connectors — they can't be
+ * fully enumerated. We approximate with a broad closed list of common verbs in
+ * both 3rd-person-singular and base forms plus the copulas/auxiliaries/modals.
+ * The grammar does NOT enforce subject-verb agreement (it allows any listed
+ * verb after any subject); at temp=0.0 the model reliably picks the agreeing
+ * form because it is by far the most probable continuation — same "grammar
+ * allows the set, model picks the natural member" philosophy as
+ * STYLE_QUESTION_CONNECTOR_GRAMMAR.
+ *
+ * If the model's ideal verb is absent from the list it must fall back to the
+ * closest listed verb — a small naturalness cost, traded for guaranteeing a
+ * verb. Keep the list broad; a per-style/curated variant is future work. */
 static const char* OPENING_SUBJECT_GRAMMAR =
     "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
     "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
-    "phrase      ::= subject (\" \" word)+\n"
-    "subject     ::= pronoun | (determiner \" \" word)\n"
+    "phrase      ::= subject \" \" verb (\" \" word)*\n"
+    "subject     ::= pronoun\n"
     "pronoun     ::= \"he\" | \"she\" | \"it\" | \"they\" | \"we\" | \"i\" | \"you\"\n"
-    "determiner  ::= \"the\" | \"a\" | \"an\" | \"this\" | \"that\" | \"his\" | \"her\" | \"their\" | \"its\"\n"
+    "verb ::= "
+        "\"is\" | \"are\" | \"am\" | \"was\" | \"were\" | \"be\" | \"has\" | \"have\" | \"had\" "
+        "| \"will\" | \"would\" | \"shall\" | \"should\" | \"can\" | \"could\" | \"may\" | \"might\" | \"must\" "
+        "| \"does\" | \"do\" | \"did\" "
+        "| \"goes\" | \"go\" | \"makes\" | \"make\" | \"takes\" | \"take\" | \"gets\" | \"get\" "
+        "| \"gives\" | \"give\" | \"uses\" | \"use\" | \"works\" | \"work\" | \"runs\" | \"run\" "
+        "| \"moves\" | \"move\" | \"starts\" | \"start\" | \"begins\" | \"begin\" | \"keeps\" | \"keep\" "
+        "| \"holds\" | \"hold\" | \"brings\" | \"bring\" | \"carries\" | \"carry\" | \"sets\" | \"set\" "
+        "| \"puts\" | \"put\" | \"shows\" | \"show\" | \"adds\" | \"add\" | \"turns\" | \"turn\" "
+        "| \"finds\" | \"find\" | \"sends\" | \"send\" | \"opens\" | \"open\" | \"closes\" | \"close\" "
+        "| \"receives\" | \"receive\" | \"presents\" | \"present\" | \"reports\" | \"report\" "
+        "| \"announces\" | \"announce\" | \"introduces\" | \"introduce\" | \"establishes\" | \"establish\" "
+        "| \"implements\" | \"implement\" | \"provides\" | \"provide\" | \"offers\" | \"offer\" "
+        "| \"plans\" | \"plan\" | \"aims\" | \"aim\" | \"seeks\" | \"seek\" | \"drives\" | \"drive\" "
+        "| \"heads\" | \"head\" | \"walks\" | \"walk\" | \"hikes\" | \"hike\" | \"climbs\" | \"climb\" "
+        "| \"explores\" | \"explore\" | \"enjoys\" | \"enjoy\" | \"spends\" | \"spend\" | \"visits\" | \"visit\" "
+        "| \"meets\" | \"meet\" | \"joins\" | \"join\" | \"leads\" | \"lead\" | \"creates\" | \"create\" "
+        "| \"builds\" | \"build\" | \"develops\" | \"develop\" | \"launches\" | \"launch\" | \"adopts\" | \"adopt\" "
+        "| \"reduces\" | \"reduce\" | \"increases\" | \"increase\" | \"improves\" | \"improve\" "
+        "| \"supports\" | \"support\" | \"delivers\" | \"deliver\" | \"shares\" | \"share\" "
+        "| \"discusses\" | \"discuss\" | \"reviews\" | \"review\" | \"completes\" | \"complete\" "
+        "| \"prepares\" | \"prepare\" | \"organizes\" | \"organize\" | \"coordinates\" | \"coordinate\" "
+        "| \"manages\" | \"manage\" | \"handles\" | \"handle\" | \"addresses\" | \"address\" "
+        "| \"proposes\" | \"propose\" | \"decides\" | \"decide\" | \"continues\" | \"continue\" "
+        "| \"remains\" | \"remain\" | \"becomes\" | \"become\" | \"appears\" | \"appear\" | \"seems\" | \"seem\" "
+        "| \"looks\" | \"look\" | \"helps\" | \"help\" | \"wants\" | \"want\" | \"needs\" | \"need\" "
+        "| \"tries\" | \"try\" | \"feels\" | \"feel\" | \"thinks\" | \"think\" | \"knows\" | \"know\" "
+        "| \"sees\" | \"see\" | \"says\" | \"say\" | \"tells\" | \"tell\" | \"asks\" | \"ask\" "
+        "| \"calls\" | \"call\" | \"gains\" | \"gain\" | \"achieves\" | \"achieve\" | \"ensures\" | \"ensure\" "
+        "| \"gathers\" | \"gather\" | \"wanders\" | \"wander\" | \"travels\" | \"travel\" | \"arrives\" | \"arrive\" "
+        "| \"returns\" | \"return\" | \"expands\" | \"expand\" | \"focuses\" | \"focus\" | \"changes\" | \"change\" "
+        "| \"updates\" | \"update\" | \"communicates\" | \"communicate\" | \"undergoes\" | \"undergo\" "
+        "| \"commutes\" | \"commute\" | \"wandered\" | \"explored\" | \"spent\" | \"headed\"\n"
     "word        ::= [a-z]+\n"
     "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws          ::= [ \\t\\n]*\n";
@@ -903,11 +956,11 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
     const char* phase = sa_len > 0
         ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
-          "start with an explicit subject — a pronoun (he/she/they/it) or a "
-          "determiner + noun drawn from the topic (shape: \"the <noun>\", "
-          "\"this <noun>\") — immediately followed by its verb. Do NOT start "
-          "with a preposition, a bare verb, or a dangling phrase with no "
-          "subject.";
+          "start with a subject pronoun (he/she/it/they/we/i/you) immediately "
+          "followed by a finite verb that agrees with it (shape: \"he <verb> "
+          "...\", \"they <verb> ...\"), then continue naturally with vocabulary "
+          "drawn from the topic. Do NOT start with a preposition, a bare verb, "
+          "a noun phrase, or a dangling phrase with no subject.";
 
     char bl_clause[640] = {0};
     if (bl_len > 0)
