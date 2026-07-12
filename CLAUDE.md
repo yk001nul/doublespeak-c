@@ -192,6 +192,18 @@ Known remaining rough edge (not a correctness bug, deferred): subject placement 
 
 Not merged to `main` yet.
 
+### Coherence pass (`imp/text-coherence-opt` branch)
+
+A follow-up pass targeting style-mode covertext *plausibility* (independent of the digression work above). Two prior symptoms were diagnosed and fixed; both changes are prompt/parameter-side only (no PRNG/protocol change — encode.c and decode.c share the same compiled-in builders, so lockstep is preserved), and each was validated with `styled_encode` 28/28 at threads=4 on Phi-3.5-mini:
+
+- **Topic drift / cross-topic vocabulary bleed** (commit `1a4869a`): the few-shot example phrases inside `STYLE_QUESTION_PHASE` and the opening-subject phase (`llm_client.c`) were all commute/office-themed ("by turning the key", "to the office", "his car"); at `temp=0.0` they dominated the output domain and leaked that vocabulary into *every* style regardless of topic (a hiking blog produced "carpooling"/"department head"). Fixed by de-theming the examples to grammatical-shape-only placeholders ("by <the means>") plus an explicit "draw vocabulary from the topic" instruction. Connector words are unchanged, so the `STYLE_QUESTION_CONNECTOR_GRAMMAR` sync invariant still holds.
+- **Word-salad run-ons** (commits `1a4869a` then `72a327c`): a sentence stacked up to 5 PRNG-selected prepositional modifiers ("to avoid X to Y by Z with W"). `CLAUSE_END_MAX_PHRASES` was lowered 6→3→**2**, so a sentence is now an opener plus at most one modifier and unrelated modifiers can no longer pile up.
+
+**Deferred to a later branch (known non-blocking quality issues, not correctness bugs):**
+- **Verbless / fragment openers** — `OPENING_SUBJECT_GRAMMAR` forces a subject-first opener but cannot force a finite *verb* after it via GBNF (verbs aren't a closed vocabulary), so openers like "that to office." or "the process has seen with key partners" still slip through. This became the dominant visible defect once the shorter (MAX=2) sentences stopped masking it. (Supersedes the "fixed" claim in the digression Status note above — `OPENING_SUBJECT_GRAMMAR` fixed *bare-verb* openers, i.e. missing subject, not missing-verb fragments.)
+- **Style-register bleed** — all four styles read in a similar register; a `FORMAL_EMAIL` doesn't read more formal than an `INFORMAL_CHAT`.
+- Occasional covertext truncation mid-word ("environmen.") when a short message spans more/shorter sentences.
+
 ### Sample style-mode outputs (verified 2026-07-12, commit `72a327c`, branch `imp/text-coherence-opt`, threads=4)
 
 All four covertexts below successfully round-tripped (`meteor_decode` recovered the exact original message) in the verification ctest run. Kept here for reference so the styles' output character can be checked without re-running the (slow, LLM-backed) test suite — only re-run `styled_encode` if a change could plausibly affect phrase/candidate generation, grammar, or the digression logic.
