@@ -14,6 +14,7 @@ LLAMA_SERVER="${SCRIPT_DIR}/bin/llama-server"
 MODEL_PATH="${1:-@METEOR_MODEL_PATH@}"
 PORT="@METEOR_LLM_PORT@"
 SEED="@METEOR_LLM_SEED@"
+NUM_THREADS="${METEOR_NUM_THREADS:-1}"
 LOGFILE="${SCRIPT_DIR}/llama_server.log"
 PIDFILE="${SCRIPT_DIR}/llama_server.pid"
 
@@ -52,14 +53,16 @@ echo "Starting llama-server..."
 echo "  model:   $MODEL_PATH"
 echo "  port:    $PORT"
 echo "  seed:    $SEED"
-echo "  threads: 1  (required for determinism)"
+echo "  threads: $NUM_THREADS  (must match on encoder AND decoder machines)"
 echo "  log:     $LOGFILE"
 
 "$LLAMA_SERVER"       \
     --model   "$MODEL_PATH" \
     --port    "$PORT"       \
     --host    127.0.0.1     \
-    --threads 1             \
+    --threads "$NUM_THREADS" \
+    --parallel 1            \
+    --no-cont-batching      \
     --seed    "$SEED"       \
     --temp    0.0           \
     --ctx-size 2048         \

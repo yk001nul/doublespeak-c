@@ -122,7 +122,19 @@ meteor_stego\out\build\x64-debug\start_llama_server.bat  path\to\model.gguf
 cmake --build meteor_stego/out/build/x64-debug --target server_health
 ```
 
-Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap`. See `ARCHITECTURE.md §6` for the full determinism checklist.
+Critical server flags for determinism: `--threads 1 --temp 0.0 --seed 42 --no-mmap` (`METEOR_NUM_THREADS` overrides the thread count — see "Performance tuning" below; encoder and decoder must match). The start scripts also pass `--parallel 1 --no-cont-batching` (single decode slot, no cross-request batching — determinism hardening). See `ARCHITECTURE.md §6` for the full determinism checklist.
+
+## Performance tuning (`imp/perf-opt-2` branch)
+
+Essentially all encode/decode wall-clock time is LLM inference — one or more blocking HTTP round-trips to `llama-server` per Meteor step, 8–20+ steps per short message. Two validated levers:
+
+1. **HTTP keep-alive (always on, zero determinism impact).** `llm_client.c` reuses one persistent WinHTTP session+connection (and `CURLOPT_TCP_KEEPALIVE` on the libcurl backend) instead of opening/closing a socket per request. Payloads are unchanged, so this cannot affect determinism; it just removes a TCP connect+teardown per step. A stale keep-alive socket is transparently reconnected and retried once. Validated: the full `determinism`/`roundtrip`/`styled_encode`/`doublespeak_cli`/`capacity` ctest suite passes 100% on Phi-3.5-mini at `--threads 1`.
+
+2. **Thread count — `METEOR_NUM_THREADS` env var (default 1).** The start scripts read it and pass `--threads N`. llama.cpp's CPU backend is reproducible for a *fixed* thread count, so raising this is a near-linear speedup — but the count is now part of the shared protocol: **encoder and decoder must use the identical value**, and cross-machine use is only safe when both machines run the same count. Default stays 1 so existing behavior is unchanged. Validate any new value with `ctest -R "determinism|roundtrip|styled_encode"` before trusting it. Validated so far on this machine (Phi-3.5-mini): `--threads 1` and `--threads 4` — the latter passed the full 5-test suite 100% (2026-07-12) with a ~2.6× overall speedup (roundtrip 3222s→1332s, styled_encode 6242s→2303s, doublespeak_cli 1444s→544s).
+
+### Rejected: prompt caching (`cache_prompt` / KV reuse) — breaks determinism
+
+An earlier revision of this branch added an opt-in `METEOR_PROMPT_CACHE` mode that set `"cache_prompt": true` + `"id_slot": 0` and erased the slot at the start of each run, aiming to turn per-run prefill from ≈O(steps²) into ≈O(steps). **It was removed after failing validation.** With `METEOR_PROMPT_CACHE=1` on Phi-3.5-mini (server at `--parallel 1 --no-cont-batching`, slot erased per run), `roundtrip`, `capacity`, and 3 of 4 `styled_encode` styles passed, but `styled_encode`'s NEWS_ARTICLE case and the `doublespeak_cli` direct style-mode roundtrip **desynced** — the covertext diverged mid-generation and decode recovered the wrong message/length. llama-server's partial-prefix KV reuse yields floating-point-divergent logits at some step, which is enough to break the encode/decode lockstep intermittently (silently, per the determinism constraint below). The *same* suite passes 100% with caching off. Do not re-enable prompt caching without a fundamentally different, bit-exact caching mechanism. The prior (unmerged) `imp/perf-opt` branch reached the same conclusion and kept `cache_prompt` off.
 
 ## Architecture
 
@@ -279,7 +291,7 @@ sampling primitive for it the way `meteor_estimate_capacity()` gives encode.
 
 This is the most critical operational requirement. A single-bit difference in LLM probability distributions between encoder and decoder corrupts the entire recovered message. Both sides must use:
 - The **same GGUF model file** (verify SHA-256 with `scripts/verify_model.sh`)
-- `--threads 1` (eliminates float reduction-order non-determinism)
+- The **same `--threads` count** on encoder and decoder (`METEOR_NUM_THREADS`, default 1 — safest cross-machine). llama.cpp's CPU backend is reproducible for a *fixed* thread count; a mismatch causes float reduction-order divergence. See "Performance tuning" above.
 - CPU-only inference (`--gpu-layers 0`); GPU float rounding differs across vendors
 - A pinned llama.cpp git tag (`LLAMA_CPP_GIT_TAG` in CMake)
 - `"cache_prompt": false` on every `/completion` request body (`llm_client.c`) — llama-server's default `cache_prompt: true` reuses KV cache across unrelated requests sharing the same slot, which can change a request's output depending on the server's prior request history even with identical prompt/seed/temp/threads. Discovered via style-mode `styled_encode` failures that were only reproducible after the server had processed a long unrelated request history (see the style-mode Status note above) — confirmed fixed by disabling cache reuse outright.

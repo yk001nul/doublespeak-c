@@ -54,6 +54,13 @@ struct LLMClientImpl {
     INTERNET_PORT port;
     int timeout_ms;
     int max_candidates;
+    /* Persistent session + connection reused across every POST (HTTP
+       keep-alive). Opening/closing these per request added a TCP connect +
+       teardown to every LLM step; llama-server keeps the connection alive, so
+       we open once and only allocate a fresh request handle per call. Both are
+       lazily (re)opened by winhttp_ensure_conn() and torn down on destroy. */
+    HINTERNET hSession;
+    HINTERNET hConnect;
 };
 
 static void parse_url(const char* url, wchar_t* host, size_t hlen,
@@ -101,6 +108,8 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
     parse_url(base_url, impl->host, 256, &impl->port, NULL, 0);
     impl->timeout_ms     = c->timeout_ms;
     impl->max_candidates = c->max_candidates;
+    impl->hSession       = NULL;
+    impl->hConnect       = NULL;
     c->curl_handle = impl; /* store impl pointer here */
     return c;
 }
@@ -108,34 +117,58 @@ LLMClient* llm_client_create(const char* base_url, int max_candidates, int timeo
 void llm_client_destroy(LLMClient* client)
 {
     if (!client) return;
+    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
+    if (impl) {
+        if (impl->hConnect) WinHttpCloseHandle(impl->hConnect);
+        if (impl->hSession) WinHttpCloseHandle(impl->hSession);
+    }
     free(client->curl_handle);
     free(client);
 }
 
-static char* winhttp_post(LLMClient* client, const char* path_suffix, const char* body)
+/* Lazily open the persistent session + connection, reusing them if already
+   open. Returns 0 on success, -1 on failure (handles left NULL). */
+static int winhttp_ensure_conn(struct LLMClientImpl* impl)
 {
-    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
-
-    HINTERNET hSession = WinHttpOpen(L"meteor-stego/1.0",
+    if (impl->hSession && impl->hConnect) return 0;
+    if (!impl->hSession) {
+        impl->hSession = WinHttpOpen(L"meteor-stego/1.0",
                                      WINHTTP_ACCESS_TYPE_NO_PROXY,
                                      WINHTTP_NO_PROXY_NAME,
                                      WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return NULL;
+        if (!impl->hSession) return -1;
+    }
+    if (!impl->hConnect) {
+        impl->hConnect = WinHttpConnect(impl->hSession, impl->host, impl->port, 0);
+        if (!impl->hConnect) return -1;
+    }
+    return 0;
+}
 
-    HINTERNET hConnect = WinHttpConnect(hSession, impl->host, impl->port, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return NULL; }
+/* Drop the persistent connection (e.g. after a send/receive error) so the
+   next call reopens it. The session is kept. */
+static void winhttp_reset_conn(struct LLMClientImpl* impl)
+{
+    if (impl->hConnect) { WinHttpCloseHandle(impl->hConnect); impl->hConnect = NULL; }
+}
+
+/* One send/receive attempt over the persistent connection. Returns the
+   response body (caller frees) on success; NULL on any failure, with
+   *out_conn_err set to 1 if the failure looks connection-level (so the caller
+   can drop + reopen the connection and retry once). */
+static char* winhttp_post_once(struct LLMClientImpl* impl, const char* path_suffix,
+                               const char* body, int* out_conn_err)
+{
+    *out_conn_err = 0;
+    if (winhttp_ensure_conn(impl) != 0) { *out_conn_err = 1; return NULL; }
 
     wchar_t wpath[256];
     MultiByteToWideChar(CP_UTF8, 0, path_suffix, -1, wpath, 256);
 
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", wpath,
+    HINTERNET hRequest = WinHttpOpenRequest(impl->hConnect, L"POST", wpath,
                                             NULL, WINHTTP_NO_REFERER,
                                             WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return NULL;
-    }
+    if (!hRequest) { *out_conn_err = 1; return NULL; }
 
     DWORD conn_timeout = (DWORD)impl->timeout_ms;
     /* llama-server holds the connection open until generation completes, so the
@@ -152,8 +185,7 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
                                    (DWORD)strlen(body), 0);
     if (!sent || !WinHttpReceiveResponse(hRequest, NULL)) {
         WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
+        *out_conn_err = 1;   /* stale keep-alive socket — reopen and retry */
         return NULL;
     }
 
@@ -167,9 +199,22 @@ static char* winhttp_post(LLMClient* client, const char* path_suffix, const char
     } while (bytes_read > 0);
 
     WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
     return gb.buf; /* caller frees */
+}
+
+static char* winhttp_post(LLMClient* client, const char* path_suffix, const char* body)
+{
+    struct LLMClientImpl* impl = (struct LLMClientImpl*)client->curl_handle;
+
+    int conn_err = 0;
+    char* resp = winhttp_post_once(impl, path_suffix, body, &conn_err);
+    if (!resp && conn_err) {
+        /* A persistent keep-alive socket can be closed by the server between
+           calls; drop it and retry once from a fresh connection. */
+        winhttp_reset_conn(impl);
+        resp = winhttp_post_once(impl, path_suffix, body, &conn_err);
+    }
+    return resp;
 }
 
 static int winhttp_health(LLMClient* client)
@@ -261,6 +306,10 @@ static char* curl_post(LLMClient* client, const char* path_suffix, const char* b
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &gb);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,     (long)client->timeout_ms);
+    /* Keep the TCP connection alive between steps. curl_easy_reset() above wipes
+       per-transfer options but the easy handle's connection cache survives, so
+       the socket to llama-server is reused rather than reconnected each call. */
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_slist_free_all(headers);
