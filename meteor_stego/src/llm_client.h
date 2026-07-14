@@ -95,6 +95,12 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
  *   continuation should answer, drawn via meteor_draw_style_question().
  *   Ignored when full_context is empty (opening step uses its own
  *   subject-establishing instruction instead).
+ * style: the MeteorStyle value (cast to int) — injects a per-style register
+ *   hint into every phrase prompt so the four styles differentiate in word
+ *   choice (the preamble's single style descriptor is too weak on its own).
+ *   Values outside 1-4 inject nothing. Part of the shared encode/decode
+ *   prompt: both sides must pass the same value (they both read it from
+ *   MeteorConfig.style, which is already shared protocol state).
  * A digression sentence's opening step is not special-cased by this
  * function at all — the caller passes a temporary preamble (built via
  * llm_client_build_preamble() on the stage-1 answer from
@@ -109,7 +115,8 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* blacklist_phrases,
                                           const char* blacklist_words,
                                           const char* subject_anchor,
-                                          StyleQuestion question);
+                                          StyleQuestion question,
+                                          int style);
 
 /*
  * Stage 1 of a sentence-level digression (style mode): asks a plain,

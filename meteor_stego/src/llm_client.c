@@ -359,27 +359,80 @@ static const char* NEW_WORD_GRAMMAR =
     "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws     ::= [ \\t\\n]*\n";
 
-/* Opening-step grammar: same JSON shape as the old free-form phrase
- * grammar, but the phrase is forced to start with a pronoun or a
- * determiner+noun ("the team", "his car") before any other word. This is
- * the same class of fix as STYLE_QUESTION_CONNECTOR_GRAMMAR below: the
- * soft prompt instruction ("every candidate MUST start with an explicit
- * subject") was frequently ignored by the model at temp=0.0, producing
- * bare-verb sentence openers ("starts his car...", "hits the road...")
- * whenever a clause-end reset started a fresh sentence mid-covertext.
- * Subject-hood itself isn't a closed vocabulary (unlike the connector
- * case), so this can't fully enumerate valid subjects the way the
- * connector grammar does — but a bare verb is never a pronoun or a
- * determiner, so gating the first word on this set closes the loophole
- * even though it doesn't cover every grammatically valid subject (e.g. a
- * bare proper noun like "sarah" without a determiner is also excluded). */
+/* Opening-step grammar: forces every opener to be "subject VERB ..." so a
+ * fresh sentence is always a real clause, not a subject glued straight to a
+ * prepositional fragment.
+ *
+ * History: an earlier revision forced only a subject-first opener
+ * (`phrase ::= subject (" " word)+`, subject = pronoun OR determiner+noun) to
+ * kill bare-verb openers ("starts his car..."). That fixed the missing-SUBJECT
+ * case but not the missing-VERB case: `(" " word)+` let the model slide
+ * straight from the subject into a preposition, producing verbless fragments
+ * ("that to office.", "his car to the office with the department head."). This
+ * revision requires a `verb` token immediately after the subject.
+ *
+ * Subject is now pronoun-ONLY (the determiner+noun alternative was removed).
+ * Forcing a verb after a determiner+noun subject produced two new failure
+ * modes, both seen in eyeball encodes: wrong-agent nonsense when the noun
+ * isn't a plausible agent ("the mountains climb", "his weekend explores"), and
+ * — because many common verbs are also nouns — a noun-phrase read when the
+ * verb slot lands on a homograph ("the quarterly report ..." parses as
+ * subject "the quarterly" + verb "report" but reads as the noun phrase). A
+ * pronoun subject has neither problem: "he/she/it/they + verb" is an
+ * unambiguous clause. Determiner openers like "the team presents" are lost,
+ * but they reappear as "it/they present", which reads just as well.
+ *
+ * Verbs are an open class, so — unlike pronouns/connectors — they can't be
+ * fully enumerated. We approximate with a broad closed list of common verbs in
+ * both 3rd-person-singular and base forms plus the copulas/auxiliaries/modals.
+ * The grammar does NOT enforce subject-verb agreement (it allows any listed
+ * verb after any subject); at temp=0.0 the model reliably picks the agreeing
+ * form because it is by far the most probable continuation — same "grammar
+ * allows the set, model picks the natural member" philosophy as
+ * STYLE_QUESTION_CONNECTOR_GRAMMAR.
+ *
+ * If the model's ideal verb is absent from the list it must fall back to the
+ * closest listed verb — a small naturalness cost, traded for guaranteeing a
+ * verb. Keep the list broad; a per-style/curated variant is future work. */
 static const char* OPENING_SUBJECT_GRAMMAR =
     "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
     "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
-    "phrase      ::= subject (\" \" word)+\n"
-    "subject     ::= pronoun | (determiner \" \" word)\n"
+    "phrase      ::= subject \" \" verb (\" \" word)*\n"
+    "subject     ::= pronoun\n"
     "pronoun     ::= \"he\" | \"she\" | \"it\" | \"they\" | \"we\" | \"i\" | \"you\"\n"
-    "determiner  ::= \"the\" | \"a\" | \"an\" | \"this\" | \"that\" | \"his\" | \"her\" | \"their\" | \"its\"\n"
+    "verb ::= "
+        "\"is\" | \"are\" | \"am\" | \"was\" | \"were\" | \"be\" | \"has\" | \"have\" | \"had\" "
+        "| \"will\" | \"would\" | \"shall\" | \"should\" | \"can\" | \"could\" | \"may\" | \"might\" | \"must\" "
+        "| \"does\" | \"do\" | \"did\" "
+        "| \"goes\" | \"go\" | \"makes\" | \"make\" | \"takes\" | \"take\" | \"gets\" | \"get\" "
+        "| \"gives\" | \"give\" | \"uses\" | \"use\" | \"works\" | \"work\" | \"runs\" | \"run\" "
+        "| \"moves\" | \"move\" | \"starts\" | \"start\" | \"begins\" | \"begin\" | \"keeps\" | \"keep\" "
+        "| \"holds\" | \"hold\" | \"brings\" | \"bring\" | \"carries\" | \"carry\" | \"sets\" | \"set\" "
+        "| \"puts\" | \"put\" | \"shows\" | \"show\" | \"adds\" | \"add\" | \"turns\" | \"turn\" "
+        "| \"finds\" | \"find\" | \"sends\" | \"send\" | \"opens\" | \"open\" | \"closes\" | \"close\" "
+        "| \"receives\" | \"receive\" | \"presents\" | \"present\" | \"reports\" | \"report\" "
+        "| \"announces\" | \"announce\" | \"introduces\" | \"introduce\" | \"establishes\" | \"establish\" "
+        "| \"implements\" | \"implement\" | \"provides\" | \"provide\" | \"offers\" | \"offer\" "
+        "| \"plans\" | \"plan\" | \"aims\" | \"aim\" | \"seeks\" | \"seek\" | \"drives\" | \"drive\" "
+        "| \"heads\" | \"head\" | \"walks\" | \"walk\" | \"hikes\" | \"hike\" | \"climbs\" | \"climb\" "
+        "| \"explores\" | \"explore\" | \"enjoys\" | \"enjoy\" | \"spends\" | \"spend\" | \"visits\" | \"visit\" "
+        "| \"meets\" | \"meet\" | \"joins\" | \"join\" | \"leads\" | \"lead\" | \"creates\" | \"create\" "
+        "| \"builds\" | \"build\" | \"develops\" | \"develop\" | \"launches\" | \"launch\" | \"adopts\" | \"adopt\" "
+        "| \"reduces\" | \"reduce\" | \"increases\" | \"increase\" | \"improves\" | \"improve\" "
+        "| \"supports\" | \"support\" | \"delivers\" | \"deliver\" | \"shares\" | \"share\" "
+        "| \"discusses\" | \"discuss\" | \"reviews\" | \"review\" | \"completes\" | \"complete\" "
+        "| \"prepares\" | \"prepare\" | \"organizes\" | \"organize\" | \"coordinates\" | \"coordinate\" "
+        "| \"manages\" | \"manage\" | \"handles\" | \"handle\" | \"addresses\" | \"address\" "
+        "| \"proposes\" | \"propose\" | \"decides\" | \"decide\" | \"continues\" | \"continue\" "
+        "| \"remains\" | \"remain\" | \"becomes\" | \"become\" | \"appears\" | \"appear\" | \"seems\" | \"seem\" "
+        "| \"looks\" | \"look\" | \"helps\" | \"help\" | \"wants\" | \"want\" | \"needs\" | \"need\" "
+        "| \"tries\" | \"try\" | \"feels\" | \"feel\" | \"thinks\" | \"think\" | \"knows\" | \"know\" "
+        "| \"sees\" | \"see\" | \"says\" | \"say\" | \"tells\" | \"tell\" | \"asks\" | \"ask\" "
+        "| \"calls\" | \"call\" | \"gains\" | \"gain\" | \"achieves\" | \"achieve\" | \"ensures\" | \"ensure\" "
+        "| \"gathers\" | \"gather\" | \"wanders\" | \"wander\" | \"travels\" | \"travel\" | \"arrives\" | \"arrive\" "
+        "| \"returns\" | \"return\" | \"expands\" | \"expand\" | \"focuses\" | \"focus\" | \"changes\" | \"change\" "
+        "| \"updates\" | \"update\" | \"communicates\" | \"communicate\" | \"undergoes\" | \"undergo\" "
+        "| \"commutes\" | \"commute\" | \"wandered\" | \"explored\" | \"spent\" | \"headed\"\n"
     "word        ::= [a-z]+\n"
     "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws          ::= [ \\t\\n]*\n";
@@ -403,6 +456,69 @@ static const char* style_to_str(int style)
         case 4: return "neutral third-person news article";
         default: return NULL;
     }
+}
+
+/* Per-style register hint injected into EVERY phrase prompt (opening and
+   continuation steps alike), indexed by MeteorStyle value (0 =
+   METEOR_STYLE_NONE, unused). The preamble already names the style once at
+   the top ("Paraphrase the sentence below as a <style>."), but at temp=0.0
+   that single descriptor is too weak a signal to survive the style-agnostic
+   phase instructions and uniform GBNF that follow it — all four styles came
+   out in the same flat register (style-register bleed). Restating the
+   register as a per-step requirement, adjacent to the phase instruction the
+   model is actually executing, is what differentiates the word choice.
+   Candidates are lowercase 1-6 word phrases, so the register can only show
+   through vocabulary and phrasing — keep the hints about word choice, not
+   punctuation/casing the grammar forbids anyway. */
+static const char* STYLE_REGISTER_HINT[] = {
+    NULL, /* METEOR_STYLE_NONE — no phrase mode */
+    /* INFORMAL_CHAT — keep this hint PURELY lexical. Two things drift the
+       chat style off a corporate topic into everyday small talk (commutes,
+       subways, jogs), both seen in eyeball runs at temp=0.0: (1) telling it
+       to "avoid corporate/formal vocabulary" on a business topic whose own
+       words ARE corporate, and (2) any social-scene imagery like "texting a
+       friend" — that's a CONTENT cue, not just a register cue, and the
+       model follows the scene instead of the topic. So: name only the word
+       choice, add no scene, and restate topic-anchoring. */
+    /* Concrete example words (not just "use plain words"): with the example
+       leak fixed, abstract lexical instructions alone still lost to a formal
+       topic's own vocabulary ("unveil", "disclose") in eyeball runs. The
+       examples are topic-neutral verbs — register cues only, no scene
+       content, so they don't reintroduce the drift documented above. They
+       are POSITIVE-only: a contrastive revision ("\"tell\" not
+       \"disclose\"") primed the named-banned words into the covertext —
+       at temp=0.0 a negative example is still an example (see CASUAL_BLOG
+       below). */
+    "\nRegister: casual chat. Prefer short everyday spoken words — like "
+    "\"show\", \"tell\", \"talk about\", \"share\" — but keep every "
+    "candidate about the topic's actual subject matter and details — the "
+    "casual register changes only the wording, never what is being talked "
+    "about.",
+    /* FORMAL_EMAIL */
+    "\nRegister: formal business email. Use precise, professional "
+    "vocabulary and measured phrasing — no slang, no chatty or casual "
+    "wording.",
+    /* CASUAL_BLOG — same "wording only" guard as INFORMAL_CHAT above
+       (eyeball runs showed it drowning in corporate jargon: "leveraging
+       data visualization", "align strategic goals"). Example words are
+       POSITIVE-only: a contrastive revision ("\"help\" not \"facilitate\"")
+       primed the named-banned word straight into the covertext ("in order
+       to facilitate informed decision making") — at temp=0.0 a negative
+       example is still an example. */
+    "\nRegister: personal blog. Use relaxed, vivid, first-person-friendly "
+    "storytelling words — plain hands-on verbs like \"dig into\", \"break "
+    "down\", \"show\" — informal and descriptive, while staying on the "
+    "topic's actual subject matter and details.",
+    /* NEWS_ARTICLE */
+    "\nRegister: news reporting. Use neutral, factual, impersonal "
+    "journalistic vocabulary — no chatty, emotional, or first-person "
+    "wording.",
+};
+
+static const char* style_register_hint(int style)
+{
+    if (style < 1 || style > 4) return "";
+    return STYLE_REGISTER_HINT[style];
 }
 
 const char* llm_client_style_seed(int style)
@@ -858,7 +974,8 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                                   const char* blacklist_phrases,
                                   const char* blacklist_words,
                                   const char* subject_anchor,
-                                  StyleQuestion question)
+                                  StyleQuestion question,
+                                  int style)
 {
     size_t pre_len  = preamble         ? strlen(preamble)         : 0;
     size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
@@ -868,9 +985,9 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                       ? strlen(blacklist_words) : 0;
     size_t sa_len   = subject_anchor && subject_anchor[0]
                       ? strlen(subject_anchor) : 0;
-    /* 2048 covers the fixed wrapper/instruction text (phase + subj/bl/bw
-       clause wording + JSON-format example) with headroom — measured at
-       ~1150 bytes as of the subject-anchor + word-blacklist prompt. A
+    /* 2048 covers the fixed wrapper/instruction text (phase + register
+       hint + subj/bl/bw clause wording + JSON-format example) with
+       headroom — measured at ~1350 bytes as of the register hint. A
        flat 1024 was undersized here and silently truncated the trailing
        "Return ONLY a JSON object..." format example via snprintf, which
        correlated with a spike in the model failing to return parseable
@@ -903,11 +1020,13 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
     const char* phase = sa_len > 0
         ? STYLE_QUESTION_PHASE[question]
         : "Provide the opening 3-6 words of the paraphrase. Every candidate MUST "
-          "start with an explicit subject — a pronoun (he/she/they/it) or a "
-          "determiner + noun drawn from the topic (shape: \"the <noun>\", "
-          "\"this <noun>\") — immediately followed by its verb. Do NOT start "
-          "with a preposition, a bare verb, or a dangling phrase with no "
-          "subject.";
+          "start with a subject pronoun (he/she/it/they/we/i/you) immediately "
+          "followed by a finite verb that agrees with it (shape: \"he <verb> "
+          "...\", \"they <verb> ...\"), then continue naturally with vocabulary "
+          "drawn from the topic. Do NOT start with a preposition, a bare verb, "
+          "a noun phrase, or a dangling phrase with no subject.";
+
+    const char* reg_hint = style_register_hint(style);
 
     char bl_clause[640] = {0};
     if (bl_len > 0)
@@ -943,17 +1062,23 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
         snprintf(buf, buf_size,
             "%s"
             "Sentence so far: \"%s\"\n"
-            "%s%s%s%s\n"
+            "%s%s%s%s%s\n"
             "Provide %d different natural continuations with probabilities.\n"
-            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives\": 0.3, \"takes the bus every day\": 0.2, \"commutes early\": 0.1} — probs sum to 1.0.",
-            preamble, ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+            /* Format example uses shape-only placeholder keys, NOT concrete
+               phrases: an earlier revision's example keys ("goes to work",
+               "takes the bus every day", "commutes early") leaked commute
+               vocabulary into the covertext whenever a register hint pulled
+               toward casual wording — same few-shot-domination mechanism the
+               coherence pass fixed in the phase instructions. */
+            "Return ONLY a JSON object like: {\"<phrase one>\": 0.4, \"<phrase two>\": 0.3, \"<a longer phrase three>\": 0.2, \"<phrase four>\": 0.1} — probs sum to 1.0.",
+            preamble, ctx ? ctx : "", phase, reg_hint, subj_clause, bl_clause, bw_clause, n);
     } else {
         snprintf(buf, buf_size,
             "Sentence so far: \"%s\"\n"
-            "%s%s%s%s\n"
+            "%s%s%s%s%s\n"
             "Provide %d different natural continuations with probabilities.\n"
             "Return ONLY a JSON object — probs sum to 1.0.",
-            ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+            ctx ? ctx : "", phase, reg_hint, subj_clause, bl_clause, bw_clause, n);
     }
     return buf;
 }
@@ -1108,11 +1233,13 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* blacklist_phrases,
                                           const char* blacklist_words,
                                           const char* subject_anchor,
-                                          StyleQuestion question)
+                                          StyleQuestion question,
+                                          int style)
 {
     char* prompt = build_phrase_prompt(preamble, full_context,
                                        client->max_candidates, blacklist_phrases,
-                                       blacklist_words, subject_anchor, question);
+                                       blacklist_words, subject_anchor, question,
+                                       style);
     if (!prompt) return NULL;
 
     /* Opening step of a sentence (subject_anchor empty) uses the fixed
