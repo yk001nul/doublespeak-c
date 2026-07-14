@@ -201,28 +201,40 @@ A follow-up pass targeting style-mode covertext *plausibility* (independent of t
 
 **Fixed in a follow-up branch:**
 - **Verbless / fragment openers** — resolved on `imp/text-verblessness-opt` (commit `6e655d2`); see "Verblessness pass" below.
+- **Style-register bleed** — resolved on `imp/style-register-opt` (commit `ebef990`); see "Style-register pass" below.
 
 **Still deferred (known non-blocking quality issues, not correctness bugs):**
-- **Style-register bleed** — all four styles read in a similar register; a `FORMAL_EMAIL` doesn't read more formal than an `INFORMAL_CHAT`. (Next scheduled work.)
 - **Pronoun-referent drift** — a residual of the verblessness fix (pronoun-only openers, below): the subject pronoun can jump across sentences within one covertext (he→they→she) and occasionally mismatch ("they run using his vehicle"). Each sentence is individually well-formed; the drift is a cross-sentence coherence nit.
-- Occasional covertext truncation mid-word ("environmen.") when a short message spans more/shorter sentences.
+- Occasional covertext truncation mid-word ("environmen.") when a short message spans more/shorter sentences. The formal registers (`FORMAL_EMAIL`, `NEWS_ARTICLE`) make it *more frequent* — their longer vocabulary hits the fixed candidate token cap more often ("terrain wi", "conservatio.") — but it still round-trips fine (decode matches the same truncated candidates); quality nit only.
 
 ### Verblessness pass (`imp/text-verblessness-opt` branch)
 
 Fixes the verbless/fragment-opener issue deferred above (which also supersedes the older digression Status note's "fixed" claim — that fixed *bare-verb*/missing-subject openers, not missing-verb fragments). `OPENING_SUBJECT_GRAMMAR` (`llm_client.c`) previously forced only a subject-first opener (`subject (" " word)+`), which let the model slide from the subject straight into a preposition ("that to office.", "the process has seen with key partners."). The grammar now requires a `verb` token immediately after the subject (`subject " " verb (" " word)*`), where `verb` is a broad closed list of common verbs (3rd-person-singular + base forms plus copulas/auxiliaries/modals). Subject is restricted to **pronouns only**: forcing a verb after a determiner+noun subject created two new failures — wrong-agent nonsense ("the mountains climb") and noun-phrase openers when the verb slot hit a homograph ("the quarterly report ...") — both seen in CLI eyeball encodes and both absent with pronoun subjects. Determiner openers ("the team presents") reappear as "it/they present", which reads just as well. Compiled-in grammar, identical on both sides, so the encode/decode lockstep holds. Validated `styled_encode` 28/28 at threads=4 on Phi-3.5-mini (commit `6e655d2`).
 
-### Sample style-mode outputs (verified 2026-07-13, commit `6e655d2`, branch `imp/text-verblessness-opt`, threads=4)
+### Style-register pass (`imp/style-register-opt` branch)
+
+Fixes the style-register bleed deferred above (all four styles read in the same flat register). The preamble names the style once at the top ("Paraphrase the sentence below as a `<style>`."), but at `temp=0.0` that single descriptor is too weak to survive the style-agnostic phase instructions and uniform GBNF that follow it. Fix (commit `ebef990`): a `STYLE_REGISTER_HINT[]` table in `llm_client.c`, injected into **every** phrase prompt (opening and continuation steps alike) via a new `int style` param threaded through `llm_client_get_phrase_dist()` → `build_phrase_prompt()`, passed as `(int)ctx->style` from both encode.c and decode.c — `MeteorConfig.style` is already shared protocol state, so the lockstep invariant holds.
+
+Three prompt-engineering findings from the eyeball iteration, encoded as comments next to the table:
+
+- **JSON format example leak (root cause of casual-style topic drift):** `build_phrase_prompt`'s JSON format example still had commute-themed keys ("goes to work", "takes the bus every day") — the coherence pass de-themed the phase instructions but missed this one. A casual register hint *aligned* with those examples pulled the covertext fully off-topic onto buses/subways. Fixed with shape-only placeholder keys (`"<phrase one>": 0.4, ...`).
+- **Abstract lexical hints lose to topic vocabulary:** "use plain words" alone still produced "unveil"/"disclose" in the chat style on a business topic. The hints need concrete topic-neutral example verbs ("show", "tell", "talk about", "share").
+- **Negative examples prime at `temp=0.0`:** contrastive pairs ("\"tell\" not \"disclose\"", "\"help\" not \"facilitate\"") put the named-*banned* word into the covertext. All hints use POSITIVE-only example words; the casual hints also restate topic-anchoring ("changes only the wording, never what is being talked about") because register cues with scene imagery act as content cues.
+
+Validated `styled_encode` 28/28 at threads=4 on Phi-3.5-mini (2026-07-14).
+
+### Sample style-mode outputs (verified 2026-07-14, commit `ebef990`, branch `imp/style-register-opt`, threads=4)
 
 All four covertexts below successfully round-tripped (`meteor_decode` recovered the exact original message) in the verification ctest run. Kept here for reference so the styles' output character can be checked without re-running the (slow, LLM-backed) test suite — only re-run `styled_encode` if a change could plausibly affect phrase/candidate generation, grammar, or the digression logic.
 
 | Style | Topic (starting context) | Message | Covertext output |
 |---|---|---|---|
-| `INFORMAL_CHAT` | John goes to the office using his car every morning. | `hi` | he heads to the office to avoid meeting tight deadlines. they run using his vehicle. he takes the subway to meet the new intern. she takes the train with colleagues. he drives to work to avoid being late. he spends the drive. |
-| `NEWS_ARTICLE` | The government announced new policies to reduce carbon emissions by 2030. | `hi` | they establish to avoid energy shortages. she ensures by implementing green technologies. they ensure to join climate action coalition. they adopt new strategies to join global sustainability forums. they introduce to avoid environmental degradation. he adopts to avoid reliance on fossil fuels. |
-| `CASUAL_BLOG` | Sarah spent the whole weekend hiking in the mountains with her dog. | `hi` | i hike to avoid altitude sickness. they start by following trails. she wanders to meet local park rangers. it undergoes a minor change to meet outdoor survival experts. he sets out to avoid altitude sickness. he wanders to avoid getting lost. he hikes. |
-| `FORMAL_EMAIL` | The team will present the quarterly results to stakeholders on Friday. | `hi` | they are scheduled to avoid inaccuracies in financial reporting. they will report using advanced software tools. he presents with department heads. they lead with key investors. they communicate to avoid misinterpretation. she delivers to avoid data errors. he adopts using advanced software tools. they lead. |
+| `INFORMAL_CHAT` | John goes to the office using his car every morning. | `hi` | he travels to the office to avoid a crowded parking lot. he takes his ride by taking the subway. he joins the office with the designers. he shares his new route to meet traffic experts. |
+| `NEWS_ARTICLE` | The government announced new policies to reduce carbon emissions by 2030. | `hi` | they are considering to avoid technological limitations. they have pledged to by promoting public transportation. they seek to expand carbon offset programs to join transnational ecological organizations. they are implementing to meet green technology partners. |
+| `CASUAL_BLOG` | Sarah spent the whole weekend hiking in the mountains with her dog. | `hi` | i was exploring to avoid steep climbs. she starts through the dense foliage. he starts to meet my hiking buddy. he delivers a nod to meet the mountain rescue team. |
+| `FORMAL_EMAIL` | The team will present the quarterly results to stakeholders on Friday. | `hi` | you will to avoid inaccuracies. they will disclose by leveraging cutting edge presentation software. they will demonstrate to meet the shareholders. they have adapted with financial analysts. |
 
-These samples reflect the coherence pass (de-themed prompts + `CLAUSE_END_MAX_PHRASES=2`) plus the verblessness pass: every sentence now opens with a pronoun + finite verb ("he heads to the office ...", "they establish to avoid ..."), so the earlier verbless fragments ("that to office.", "the process has seen with key partners.") are gone. Remaining visible nits — pronoun-referent drift across sentences and similar register across all four styles — are the deferred items above.
+These samples reflect the coherence pass (de-themed prompts + `CLAUSE_END_MAX_PHRASES=2`), the verblessness pass (pronoun + finite-verb openers), and the style-register pass: the four styles now differ visibly in register — chat is plain ("takes his ride", "shares his new route"), email is corporate-formal ("disclose by leveraging cutting edge presentation software"), blog is first-person narrative ("i was exploring", "my hiking buddy"), news is institutional ("they have pledged", "transnational ecological organizations"). Remaining visible nits — pronoun-referent drift across sentences ("i was exploring ... she starts ... he starts"), occasional dropped objects/verbs after a modal ("you will to avoid inaccuracies", "they have pledged to by promoting") — are the deferred items above.
 
 ## `doublespeak` console app (`imp/doublespeak-console` branch)
 
