@@ -458,6 +458,69 @@ static const char* style_to_str(int style)
     }
 }
 
+/* Per-style register hint injected into EVERY phrase prompt (opening and
+   continuation steps alike), indexed by MeteorStyle value (0 =
+   METEOR_STYLE_NONE, unused). The preamble already names the style once at
+   the top ("Paraphrase the sentence below as a <style>."), but at temp=0.0
+   that single descriptor is too weak a signal to survive the style-agnostic
+   phase instructions and uniform GBNF that follow it — all four styles came
+   out in the same flat register (style-register bleed). Restating the
+   register as a per-step requirement, adjacent to the phase instruction the
+   model is actually executing, is what differentiates the word choice.
+   Candidates are lowercase 1-6 word phrases, so the register can only show
+   through vocabulary and phrasing — keep the hints about word choice, not
+   punctuation/casing the grammar forbids anyway. */
+static const char* STYLE_REGISTER_HINT[] = {
+    NULL, /* METEOR_STYLE_NONE — no phrase mode */
+    /* INFORMAL_CHAT — keep this hint PURELY lexical. Two things drift the
+       chat style off a corporate topic into everyday small talk (commutes,
+       subways, jogs), both seen in eyeball runs at temp=0.0: (1) telling it
+       to "avoid corporate/formal vocabulary" on a business topic whose own
+       words ARE corporate, and (2) any social-scene imagery like "texting a
+       friend" — that's a CONTENT cue, not just a register cue, and the
+       model follows the scene instead of the topic. So: name only the word
+       choice, add no scene, and restate topic-anchoring. */
+    /* Concrete example words (not just "use plain words"): with the example
+       leak fixed, abstract lexical instructions alone still lost to a formal
+       topic's own vocabulary ("unveil", "disclose") in eyeball runs. The
+       examples are topic-neutral verbs — register cues only, no scene
+       content, so they don't reintroduce the drift documented above. They
+       are POSITIVE-only: a contrastive revision ("\"tell\" not
+       \"disclose\"") primed the named-banned words into the covertext —
+       at temp=0.0 a negative example is still an example (see CASUAL_BLOG
+       below). */
+    "\nRegister: casual chat. Prefer short everyday spoken words — like "
+    "\"show\", \"tell\", \"talk about\", \"share\" — but keep every "
+    "candidate about the topic's actual subject matter and details — the "
+    "casual register changes only the wording, never what is being talked "
+    "about.",
+    /* FORMAL_EMAIL */
+    "\nRegister: formal business email. Use precise, professional "
+    "vocabulary and measured phrasing — no slang, no chatty or casual "
+    "wording.",
+    /* CASUAL_BLOG — same "wording only" guard as INFORMAL_CHAT above
+       (eyeball runs showed it drowning in corporate jargon: "leveraging
+       data visualization", "align strategic goals"). Example words are
+       POSITIVE-only: a contrastive revision ("\"help\" not \"facilitate\"")
+       primed the named-banned word straight into the covertext ("in order
+       to facilitate informed decision making") — at temp=0.0 a negative
+       example is still an example. */
+    "\nRegister: personal blog. Use relaxed, vivid, first-person-friendly "
+    "storytelling words — plain hands-on verbs like \"dig into\", \"break "
+    "down\", \"show\" — informal and descriptive, while staying on the "
+    "topic's actual subject matter and details.",
+    /* NEWS_ARTICLE */
+    "\nRegister: news reporting. Use neutral, factual, impersonal "
+    "journalistic vocabulary — no chatty, emotional, or first-person "
+    "wording.",
+};
+
+static const char* style_register_hint(int style)
+{
+    if (style < 1 || style > 4) return "";
+    return STYLE_REGISTER_HINT[style];
+}
+
 const char* llm_client_style_seed(int style)
 {
     switch (style) {
@@ -911,7 +974,8 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                                   const char* blacklist_phrases,
                                   const char* blacklist_words,
                                   const char* subject_anchor,
-                                  StyleQuestion question)
+                                  StyleQuestion question,
+                                  int style)
 {
     size_t pre_len  = preamble         ? strlen(preamble)         : 0;
     size_t ctx_len  = ctx && ctx[0]    ? strlen(ctx)              : 0;
@@ -921,9 +985,9 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
                       ? strlen(blacklist_words) : 0;
     size_t sa_len   = subject_anchor && subject_anchor[0]
                       ? strlen(subject_anchor) : 0;
-    /* 2048 covers the fixed wrapper/instruction text (phase + subj/bl/bw
-       clause wording + JSON-format example) with headroom — measured at
-       ~1150 bytes as of the subject-anchor + word-blacklist prompt. A
+    /* 2048 covers the fixed wrapper/instruction text (phase + register
+       hint + subj/bl/bw clause wording + JSON-format example) with
+       headroom — measured at ~1350 bytes as of the register hint. A
        flat 1024 was undersized here and silently truncated the trailing
        "Return ONLY a JSON object..." format example via snprintf, which
        correlated with a spike in the model failing to return parseable
@@ -962,6 +1026,8 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
           "drawn from the topic. Do NOT start with a preposition, a bare verb, "
           "a noun phrase, or a dangling phrase with no subject.";
 
+    const char* reg_hint = style_register_hint(style);
+
     char bl_clause[640] = {0};
     if (bl_len > 0)
         snprintf(bl_clause, sizeof(bl_clause),
@@ -996,17 +1062,23 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
         snprintf(buf, buf_size,
             "%s"
             "Sentence so far: \"%s\"\n"
-            "%s%s%s%s\n"
+            "%s%s%s%s%s\n"
             "Provide %d different natural continuations with probabilities.\n"
-            "Return ONLY a JSON object like: {\"goes to work\": 0.4, \"drives\": 0.3, \"takes the bus every day\": 0.2, \"commutes early\": 0.1} — probs sum to 1.0.",
-            preamble, ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+            /* Format example uses shape-only placeholder keys, NOT concrete
+               phrases: an earlier revision's example keys ("goes to work",
+               "takes the bus every day", "commutes early") leaked commute
+               vocabulary into the covertext whenever a register hint pulled
+               toward casual wording — same few-shot-domination mechanism the
+               coherence pass fixed in the phase instructions. */
+            "Return ONLY a JSON object like: {\"<phrase one>\": 0.4, \"<phrase two>\": 0.3, \"<a longer phrase three>\": 0.2, \"<phrase four>\": 0.1} — probs sum to 1.0.",
+            preamble, ctx ? ctx : "", phase, reg_hint, subj_clause, bl_clause, bw_clause, n);
     } else {
         snprintf(buf, buf_size,
             "Sentence so far: \"%s\"\n"
-            "%s%s%s%s\n"
+            "%s%s%s%s%s\n"
             "Provide %d different natural continuations with probabilities.\n"
             "Return ONLY a JSON object — probs sum to 1.0.",
-            ctx ? ctx : "", phase, subj_clause, bl_clause, bw_clause, n);
+            ctx ? ctx : "", phase, reg_hint, subj_clause, bl_clause, bw_clause, n);
     }
     return buf;
 }
@@ -1161,11 +1233,13 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* blacklist_phrases,
                                           const char* blacklist_words,
                                           const char* subject_anchor,
-                                          StyleQuestion question)
+                                          StyleQuestion question,
+                                          int style)
 {
     char* prompt = build_phrase_prompt(preamble, full_context,
                                        client->max_candidates, blacklist_phrases,
-                                       blacklist_words, subject_anchor, question);
+                                       blacklist_words, subject_anchor, question,
+                                       style);
     if (!prompt) return NULL;
 
     /* Opening step of a sentence (subject_anchor empty) uses the fixed

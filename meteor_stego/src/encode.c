@@ -154,7 +154,7 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
                 hist_count > 0 ? blacklist_buf : NULL,
                 word_blacklist_buf[0] ? word_blacklist_buf : NULL,
                 subject_anchor[0] ? subject_anchor : NULL,
-                question);
+                question, (int)ctx->style);
             free(digress_answer);
             free(digress_preamble);
             if (!resp) { *out_error = METEOR_ERR_LLM; break; }
