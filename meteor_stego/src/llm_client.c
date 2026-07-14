@@ -393,46 +393,98 @@ static const char* NEW_WORD_GRAMMAR =
  *
  * If the model's ideal verb is absent from the list it must fall back to the
  * closest listed verb — a small naturalness cost, traded for guaranteeing a
- * verb. Keep the list broad; a per-style/curated variant is future work. */
+ * verb. Keep the list broad; a per-style/curated variant is future work.
+ *
+ * MODALITY (imp/modality-fix): the verb slot is split into two classes rather
+ * than one flat list. An earlier revision lumped the modals (will/would/.../
+ * must) and the dummy auxiliary (do/does/did) in with the lexical + be/have
+ * verbs, so a *modal alone* could satisfy the verb requirement and the free
+ * `(" " word)*` tail then slid straight into a connector-like preposition —
+ * producing modal-without-main-verb openers ("you will to avoid inaccuracies",
+ * "they will to meet ..."). A modal/dummy-auxiliary is grammatically
+ * incomplete without a following bare-infinitive main verb, so the grammar now
+ * requires one: `verb ::= finite | modal " " baseverb`. `finite` is every verb
+ * that can legitimately stand as the whole finite verb (lexical 3ps/base forms,
+ * be/have auxiliaries, and the few past-tense forms); `modal` must be followed
+ * by a `baseverb` (base-form lexical verb) — "he will present ...", "they can
+ * reduce ...". be/have are intentionally left in `finite` (able to stand alone):
+ * unlike a modal they read fine with the participle the model supplies in the
+ * tail at temp=0.0 ("they have pledged ...", "they are considering ..."), and
+ * enumerating -ing/-ed participles to gate them the same way would balloon the
+ * list for no observed benefit. `baseverb` is reused both standalone (inside
+ * `finite`) and as the modal complement, so the base-form list isn't
+ * duplicated. */
 static const char* OPENING_SUBJECT_GRAMMAR =
     "root        ::= \"{\" ws phrase-pair (ws \",\" ws phrase-pair)* ws \"}\"\n"
     "phrase-pair ::= \"\\\"\" phrase \"\\\"\" ws \":\" ws number\n"
     "phrase      ::= subject \" \" verb (\" \" word)*\n"
     "subject     ::= pronoun\n"
     "pronoun     ::= \"he\" | \"she\" | \"it\" | \"they\" | \"we\" | \"i\" | \"you\"\n"
-    "verb ::= "
+    "verb        ::= finite | modal \" \" baseverb\n"
+    "modal ::= "
+        "\"will\" | \"would\" | \"shall\" | \"should\" | \"can\" | \"could\" | \"may\" | \"might\" | \"must\" "
+        "| \"does\" | \"do\" | \"did\"\n"
+    "finite ::= "
         "\"is\" | \"are\" | \"am\" | \"was\" | \"were\" | \"be\" | \"has\" | \"have\" | \"had\" "
-        "| \"will\" | \"would\" | \"shall\" | \"should\" | \"can\" | \"could\" | \"may\" | \"might\" | \"must\" "
-        "| \"does\" | \"do\" | \"did\" "
-        "| \"goes\" | \"go\" | \"makes\" | \"make\" | \"takes\" | \"take\" | \"gets\" | \"get\" "
-        "| \"gives\" | \"give\" | \"uses\" | \"use\" | \"works\" | \"work\" | \"runs\" | \"run\" "
-        "| \"moves\" | \"move\" | \"starts\" | \"start\" | \"begins\" | \"begin\" | \"keeps\" | \"keep\" "
-        "| \"holds\" | \"hold\" | \"brings\" | \"bring\" | \"carries\" | \"carry\" | \"sets\" | \"set\" "
-        "| \"puts\" | \"put\" | \"shows\" | \"show\" | \"adds\" | \"add\" | \"turns\" | \"turn\" "
-        "| \"finds\" | \"find\" | \"sends\" | \"send\" | \"opens\" | \"open\" | \"closes\" | \"close\" "
-        "| \"receives\" | \"receive\" | \"presents\" | \"present\" | \"reports\" | \"report\" "
-        "| \"announces\" | \"announce\" | \"introduces\" | \"introduce\" | \"establishes\" | \"establish\" "
-        "| \"implements\" | \"implement\" | \"provides\" | \"provide\" | \"offers\" | \"offer\" "
-        "| \"plans\" | \"plan\" | \"aims\" | \"aim\" | \"seeks\" | \"seek\" | \"drives\" | \"drive\" "
-        "| \"heads\" | \"head\" | \"walks\" | \"walk\" | \"hikes\" | \"hike\" | \"climbs\" | \"climb\" "
-        "| \"explores\" | \"explore\" | \"enjoys\" | \"enjoy\" | \"spends\" | \"spend\" | \"visits\" | \"visit\" "
-        "| \"meets\" | \"meet\" | \"joins\" | \"join\" | \"leads\" | \"lead\" | \"creates\" | \"create\" "
-        "| \"builds\" | \"build\" | \"develops\" | \"develop\" | \"launches\" | \"launch\" | \"adopts\" | \"adopt\" "
-        "| \"reduces\" | \"reduce\" | \"increases\" | \"increase\" | \"improves\" | \"improve\" "
-        "| \"supports\" | \"support\" | \"delivers\" | \"deliver\" | \"shares\" | \"share\" "
-        "| \"discusses\" | \"discuss\" | \"reviews\" | \"review\" | \"completes\" | \"complete\" "
-        "| \"prepares\" | \"prepare\" | \"organizes\" | \"organize\" | \"coordinates\" | \"coordinate\" "
-        "| \"manages\" | \"manage\" | \"handles\" | \"handle\" | \"addresses\" | \"address\" "
-        "| \"proposes\" | \"propose\" | \"decides\" | \"decide\" | \"continues\" | \"continue\" "
-        "| \"remains\" | \"remain\" | \"becomes\" | \"become\" | \"appears\" | \"appear\" | \"seems\" | \"seem\" "
-        "| \"looks\" | \"look\" | \"helps\" | \"help\" | \"wants\" | \"want\" | \"needs\" | \"need\" "
-        "| \"tries\" | \"try\" | \"feels\" | \"feel\" | \"thinks\" | \"think\" | \"knows\" | \"know\" "
-        "| \"sees\" | \"see\" | \"says\" | \"say\" | \"tells\" | \"tell\" | \"asks\" | \"ask\" "
-        "| \"calls\" | \"call\" | \"gains\" | \"gain\" | \"achieves\" | \"achieve\" | \"ensures\" | \"ensure\" "
-        "| \"gathers\" | \"gather\" | \"wanders\" | \"wander\" | \"travels\" | \"travel\" | \"arrives\" | \"arrive\" "
-        "| \"returns\" | \"return\" | \"expands\" | \"expand\" | \"focuses\" | \"focus\" | \"changes\" | \"change\" "
-        "| \"updates\" | \"update\" | \"communicates\" | \"communicate\" | \"undergoes\" | \"undergo\" "
-        "| \"commutes\" | \"commute\" | \"wandered\" | \"explored\" | \"spent\" | \"headed\"\n"
+        "| baseverb "
+        "| \"goes\" | \"makes\" | \"takes\" | \"gets\" "
+        "| \"gives\" | \"uses\" | \"works\" | \"runs\" "
+        "| \"moves\" | \"starts\" | \"begins\" | \"keeps\" "
+        "| \"holds\" | \"brings\" | \"carries\" | \"sets\" "
+        "| \"puts\" | \"shows\" | \"adds\" | \"turns\" "
+        "| \"finds\" | \"sends\" | \"opens\" | \"closes\" "
+        "| \"receives\" | \"presents\" | \"reports\" "
+        "| \"announces\" | \"introduces\" | \"establishes\" "
+        "| \"implements\" | \"provides\" | \"offers\" "
+        "| \"plans\" | \"aims\" | \"seeks\" | \"drives\" "
+        "| \"heads\" | \"walks\" | \"hikes\" | \"climbs\" "
+        "| \"explores\" | \"enjoys\" | \"spends\" | \"visits\" "
+        "| \"meets\" | \"joins\" | \"leads\" | \"creates\" "
+        "| \"builds\" | \"develops\" | \"launches\" | \"adopts\" "
+        "| \"reduces\" | \"increases\" | \"improves\" "
+        "| \"supports\" | \"delivers\" | \"shares\" "
+        "| \"discusses\" | \"reviews\" | \"completes\" "
+        "| \"prepares\" | \"organizes\" | \"coordinates\" "
+        "| \"manages\" | \"handles\" | \"addresses\" "
+        "| \"proposes\" | \"decides\" | \"continues\" "
+        "| \"remains\" | \"becomes\" | \"appears\" | \"seems\" "
+        "| \"looks\" | \"helps\" | \"wants\" | \"needs\" "
+        "| \"tries\" | \"feels\" | \"thinks\" | \"knows\" "
+        "| \"sees\" | \"says\" | \"tells\" | \"asks\" "
+        "| \"calls\" | \"gains\" | \"achieves\" | \"ensures\" "
+        "| \"gathers\" | \"wanders\" | \"travels\" | \"arrives\" "
+        "| \"returns\" | \"expands\" | \"focuses\" | \"changes\" "
+        "| \"updates\" | \"communicates\" | \"undergoes\" "
+        "| \"commutes\" | \"wandered\" | \"explored\" | \"spent\" | \"headed\"\n"
+    "baseverb ::= "
+        "\"go\" | \"make\" | \"take\" | \"get\" "
+        "| \"give\" | \"use\" | \"work\" | \"run\" "
+        "| \"move\" | \"start\" | \"begin\" | \"keep\" "
+        "| \"hold\" | \"bring\" | \"carry\" | \"set\" "
+        "| \"put\" | \"show\" | \"add\" | \"turn\" "
+        "| \"find\" | \"send\" | \"open\" | \"close\" "
+        "| \"receive\" | \"present\" | \"report\" "
+        "| \"announce\" | \"introduce\" | \"establish\" "
+        "| \"implement\" | \"provide\" | \"offer\" "
+        "| \"plan\" | \"aim\" | \"seek\" | \"drive\" "
+        "| \"head\" | \"walk\" | \"hike\" | \"climb\" "
+        "| \"explore\" | \"enjoy\" | \"spend\" | \"visit\" "
+        "| \"meet\" | \"join\" | \"lead\" | \"create\" "
+        "| \"build\" | \"develop\" | \"launch\" | \"adopt\" "
+        "| \"reduce\" | \"increase\" | \"improve\" "
+        "| \"support\" | \"deliver\" | \"share\" "
+        "| \"discuss\" | \"review\" | \"complete\" "
+        "| \"prepare\" | \"organize\" | \"coordinate\" "
+        "| \"manage\" | \"handle\" | \"address\" "
+        "| \"propose\" | \"decide\" | \"continue\" "
+        "| \"remain\" | \"become\" | \"appear\" | \"seem\" "
+        "| \"look\" | \"help\" | \"want\" | \"need\" "
+        "| \"try\" | \"feel\" | \"think\" | \"know\" "
+        "| \"see\" | \"say\" | \"tell\" | \"ask\" "
+        "| \"call\" | \"gain\" | \"achieve\" | \"ensure\" "
+        "| \"gather\" | \"wander\" | \"travel\" | \"arrive\" "
+        "| \"return\" | \"expand\" | \"focus\" | \"change\" "
+        "| \"update\" | \"communicate\" | \"undergo\" | \"commute\"\n"
     "word        ::= [a-z]+\n"
     "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
     "ws          ::= [ \\t\\n]*\n";
