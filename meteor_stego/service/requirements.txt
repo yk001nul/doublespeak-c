@@ -1,0 +1,10 @@
+# Phase 1 MVP service dependencies. Pinned to the versions validated locally
+# (Python 3.13, Windows). The service wraps the in-repo ctypes binding
+# (meteor_stego/bindings/python/meteor.py), which is NOT a pip package — it is
+# imported by path and must match the compiled meteor.dll/.so it loads.
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
+# Test-only:
+httpx==0.28.1
+pytest==9.1.1
