@@ -1,0 +1,18 @@
+# Determinism contract as environment. EVERY worker pod shares this — any
+# mismatch (thread count, model, llama.cpp tag) silently corrupts messages.
+# Replace the placeholders (or generate via kustomize/envsubst) before apply.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doublespeak-worker-config
+  namespace: doublespeak
+data:
+  GCP_PROJECT: "REPLACE_PROJECT_ID"
+  GCS_BUCKET: "REPLACE_PROJECT_ID-doublespeak-assets"
+  GCS_MODEL_OBJECT: "models/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+  METEOR_GGUF_PATH: "/models/model.gguf"
+  METEOR_GGUF_SHA256: "REPLACE_GGUF_SHA256"
+  LLAMA_CPP_TAG: "REPLACE_LLAMA_CPP_TAG"
+  # Shared protocol state — must equal the value encoders/decoders use.
+  METEOR_NUM_THREADS: "4"
+  METEOR_LLM_URL: "http://127.0.0.1:8080"

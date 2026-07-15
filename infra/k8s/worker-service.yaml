@@ -1,0 +1,17 @@
+# Internal Service fronting the worker pods. Cloud Tasks pushes to this address
+# (set as WORKER_URL on the front-end). ClusterIP by default — expose via an
+# internal Ingress / Gateway with IAP or an OIDC-validating proxy so only the
+# Cloud Tasks invoker SA can reach /internal/run.
+apiVersion: v1
+kind: Service
+metadata:
+  name: doublespeak-worker
+  namespace: doublespeak
+  labels: { app: doublespeak-worker }
+spec:
+  selector: { app: doublespeak-worker }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

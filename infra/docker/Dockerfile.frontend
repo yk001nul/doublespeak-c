@@ -1,0 +1,27 @@
+# Cloud Run front-end image.
+#
+# Slim: the front-end does NO inference, so it needs neither meteor.so nor
+# llama-server — just FastAPI plus the Firestore/Cloud Tasks client libraries.
+# Build context is the repo root.
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Base + GCP service dependencies.
+COPY meteor_stego/service/requirements.txt      /app/requirements.txt
+COPY meteor_stego/service/requirements-gcp.txt  /app/requirements-gcp.txt
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-gcp.txt
+
+# Only the Python service package is needed (no C sources, no binding — the
+# front-end never loads meteor.so). meteor_stego is a namespace package, so
+# PYTHONPATH=/app makes `meteor_stego.service...` importable without an
+# __init__.py.
+COPY meteor_stego/service      /app/meteor_stego/service
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+# Cloud Run provides $PORT.
+ENV PORT=8080
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn meteor_stego.service.gcp.frontend_app:app --host 0.0.0.0 --port ${PORT}"]

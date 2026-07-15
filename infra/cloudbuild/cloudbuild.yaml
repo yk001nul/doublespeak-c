@@ -1,0 +1,52 @@
+# Builds and pushes the front-end and worker images to Artifact Registry,
+# tagged with the git commit SHA — image identity is determinism-critical
+# (every worker must run byte-identical meteor.so + llama.cpp).
+#
+# Substitutions:
+#   _REGION   e.g. us-central1
+#   _REPO     Artifact Registry repo (Terraform output artifact_registry_repo, name part)
+# Run from repo root:
+#   gcloud builds submit --config infra/cloudbuild/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=doublespeak
+
+substitutions:
+  _REGION: us-central1
+  _REPO: doublespeak
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:latest"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/worker:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/worker:latest"
+
+steps:
+  # ── front-end (slim) ──
+  - id: build-frontend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - infra/docker/Dockerfile.frontend
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$SHORT_SHA"
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:latest"
+      - .
+
+  # ── worker (multi-stage; compiles meteor.so + llama.cpp — slow) ──
+  - id: build-worker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - infra/docker/Dockerfile.worker
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/worker:$SHORT_SHA"
+      - -t
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/worker:latest"
+      - .
+
+# The worker build compiles llama.cpp — give it a big machine and a long timeout.
+options:
+  machineType: E2_HIGHCPU_32
+timeout: 3600s

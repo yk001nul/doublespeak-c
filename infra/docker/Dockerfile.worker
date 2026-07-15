@@ -1,0 +1,68 @@
+# GKE worker image (multi-stage).
+#
+# Stage 1 builds the determinism-critical native artifacts from source: the
+# meteor shared library and a matching llama-server at the pinned llama.cpp tag.
+# Stage 2 is the runtime: Python + FastAPI worker + the ctypes binding + those
+# artifacts. The GGUF model is NOT baked in — it is pulled from GCS and
+# SHA-verified on startup (gcp/gcs.ensure_model), keeping model versioning in
+# GCS and the image small(er).
+#
+# Build context is the repo root. This build compiles llama.cpp and can take
+# 10-20 min on a cold cache.
+
+# ── Stage 1: build meteor.so + llama-server ──────────────────────────────────
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates \
+        libsodium-dev libcurl4-openssl-dev libhyphen-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY meteor_stego /src/meteor_stego
+
+# Configure + build the library and copy out a matching llama-server. Uses the
+# Linux release preset from CMakePresets.json.
+RUN cmake --preset linux-release -S meteor_stego \
+    && cmake --build meteor_stego/out/build/linux-release --target meteor --parallel \
+    && cmake --build meteor_stego/out/build/linux-release --target copy_llama_server
+
+# Collect artifacts into a stable location for the runtime stage.
+RUN mkdir -p /artifacts/bin \
+    && cp meteor_stego/out/build/linux-release/libmeteor.so /artifacts/ \
+    && cp meteor_stego/out/build/linux-release/bin/llama-server /artifacts/bin/ \
+    && (cp meteor_stego/out/build/linux-release/bin/*.so /artifacts/bin/ 2>/dev/null || true)
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM python:3.13-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libsodium23 libcurl4 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY meteor_stego/service/requirements.txt      /app/requirements.txt
+COPY meteor_stego/service/requirements-gcp.txt  /app/requirements-gcp.txt
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-gcp.txt
+
+# Service package + the ctypes binding.
+COPY meteor_stego/service          /app/meteor_stego/service
+COPY meteor_stego/bindings/python  /app/meteor_stego/bindings/python
+
+# Native artifacts. meteor.py's _load_library() searches its OWN directory
+# first, so place libmeteor.so alongside the binding. llama-server (and any
+# co-located ggml .so's) go on PATH.
+COPY --from=build /artifacts/libmeteor.so  /app/meteor_stego/bindings/python/libmeteor.so
+COPY --from=build /artifacts/bin/          /usr/local/bin/
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+# The worker talks to a llama-server it launches as a sidecar/co-process on
+# localhost (see k8s/worker-deployment.yaml). Determinism env is injected by the
+# ConfigMap (METEOR_NUM_THREADS, METEOR_GGUF_SHA256, LLAMA_CPP_TAG, ...).
+ENV METEOR_LLM_URL=http://127.0.0.1:8080
+ENV PORT=8080
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn meteor_stego.service.gcp.worker_app:app --host 0.0.0.0 --port ${PORT}"]
