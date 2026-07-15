@@ -1,0 +1,10 @@
+# GCP-mode dependencies (front-end + worker). Layered on top of requirements.txt.
+# These are NOT installed for local/dev runs or the fake-backed unit tests —
+# the gcp/ modules lazy-import them, so only a real GCP deployment needs them.
+#
+# NOTE: versions below were not install-validated in the dev environment (no
+# GCP access here). Pin to whatever your Artifact Registry build resolves and
+# re-pin from the built image's `pip freeze`.
+google-cloud-firestore>=2.19,<3
+google-cloud-tasks>=2.16,<3
+google-cloud-storage>=2.18,<3

@@ -1,0 +1,36 @@
+"""
+The JobStore contract, shared by the local in-memory store and the GCP
+Firestore store.
+
+Both `jobs.InMemoryJobStore` and `gcp.firestore_store.FirestoreJobStore`
+implement this surface, so `worker.run_encode/run_decode` and the API layers are
+agnostic to which backing store is in use. Swapping stores is a wiring change,
+not an API change.
+"""
+from typing import Protocol, runtime_checkable
+
+from .jobs import Job, InMemoryJobStore  # noqa: F401  (re-exported for callers)
+
+
+@runtime_checkable
+class JobStore(Protocol):
+    def create(self, kind: str, model_info: dict, payload: dict | None = None) -> Job:
+        """Create a queued job (optionally persisting the request payload) and
+        return it."""
+        ...
+
+    def get(self, job_id: str) -> Job | None:
+        ...
+
+    def mark_running(self, job_id: str) -> None:
+        ...
+
+    def update_progress(self, job_id: str, *, step: int, bits_done: int,
+                        total_bits: int, elapsed_s: float, eta_s: float | None) -> None:
+        ...
+
+    def set_done(self, job_id: str, result: dict) -> None:
+        ...
+
+    def set_failed(self, job_id: str, error: str) -> None:
+        ...

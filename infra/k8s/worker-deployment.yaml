@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: doublespeak
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: doublespeak-worker
+  namespace: doublespeak
+  annotations:
+    # Workload Identity: bind to the GCP worker SA (Terraform output
+    # worker_service_account).
+    iam.gke.io/gcp-service-account: doublespeak-worker@REPLACE_PROJECT_ID.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doublespeak-worker
+  namespace: doublespeak
+  labels: { app: doublespeak-worker }
+spec:
+  # min replicas; the HPA scales this on queue depth. Each pod is ONE slot.
+  replicas: 1
+  selector:
+    matchLabels: { app: doublespeak-worker }
+  template:
+    metadata:
+      labels: { app: doublespeak-worker }
+    spec:
+      serviceAccountName: doublespeak-worker
+      # One job per pod: never pack two single-slot workers onto contention.
+      terminationGracePeriodSeconds: 60
+
+      initContainers:
+        # Pull + SHA-verify the pinned GGUF into the shared volume before either
+        # container starts. Reuses the worker image (has gcp.gcs + Workload
+        # Identity creds). Aborts the pod on SHA mismatch (determinism).
+        - name: pull-model
+          image: REPLACE_WORKER_IMAGE
+          command: ["python", "-c", "from meteor_stego.service.gcp import gcs; gcs.ensure_model()"]
+          envFrom:
+            - configMapRef: { name: doublespeak-worker-config }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+
+      containers:
+        # llama-server sidecar — deterministic flags; threads MUST match
+        # METEOR_NUM_THREADS. Loads the model from the shared volume.
+        - name: llama-server
+          image: REPLACE_WORKER_IMAGE
+          command: ["sh", "-c"]
+          args:
+            - >
+              llama-server
+              --model /models/model.gguf
+              --host 127.0.0.1 --port 8080
+              --threads ${METEOR_NUM_THREADS}
+              --parallel 1 --no-cont-batching
+              --seed 42 --temp 0.0 --ctx-size 2048 --no-mmap --log-disable
+          envFrom:
+            - configMapRef: { name: doublespeak-worker-config }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          resources:
+            requests: { cpu: "4", memory: "6Gi" }
+            limits:   { cpu: "4", memory: "8Gi" }
+
+        # FastAPI worker — receives Cloud Tasks pushes, drives encode/decode.
+        # Listens on 8000; llama-server owns 8080 in the shared pod network.
+        - name: worker
+          image: REPLACE_WORKER_IMAGE
+          ports:
+            - containerPort: 8000
+          env:
+            - { name: PORT, value: "8000" }
+          envFrom:
+            - configMapRef: { name: doublespeak-worker-config }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8000 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "500m", memory: "1Gi" }
+
+      volumes:
+        - name: models
+          emptyDir: { sizeLimit: 4Gi }
