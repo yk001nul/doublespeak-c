@@ -1,0 +1,34 @@
+# Autoscale workers on Cloud Tasks QUEUE DEPTH, never CPU: a busy single-slot
+# worker sits at 100% CPU by design, so CPU-based scaling would never scale out.
+#
+# Requires the Custom Metrics Stackdriver Adapter installed in-cluster so the
+# Cloud Monitoring external metric cloudtasks.googleapis.com/queue/depth is
+# available to the HPA. targetAverageValue=1 means "aim for ~1 queued task per
+# worker" — add a replica per waiting job, up to maxReplicas.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: doublespeak-worker
+  namespace: doublespeak
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: doublespeak-worker
+  minReplicas: 1        # stay warm (multi-GB GGUF reload on cold start)
+  maxReplicas: 4
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: cloudtasks.googleapis.com|queue|depth
+          selector:
+            matchLabels:
+              resource.labels.queue_id: meteor-jobs
+        target:
+          type: AverageValue
+          averageValue: "1"
+  behavior:
+    scaleDown:
+      # Don't thrash: a worker mid-job is 100% CPU; wait before scaling in.
+      stabilizationWindowSeconds: 300

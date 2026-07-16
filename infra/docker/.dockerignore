@@ -1,0 +1,11 @@
+# Keep build contexts small and deterministic. Never ship local build output,
+# models, or Windows artifacts into the images.
+**/out/
+**/build/
+**/__pycache__/
+**/*.pyc
+models/
+*.gguf
+meteor_stego/deps/libsodium/libsodium/**/  # Windows prebuilt libs; Linux uses apt libsodium-dev
+.git/
+.vscode/

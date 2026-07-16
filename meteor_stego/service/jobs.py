@@ -36,6 +36,11 @@ class Job:
     kind: str                      # "encode" | "decode"
     status: str
     model_info: dict
+    # The validated request payload, persisted so a worker that did not receive
+    # the original HTTP request (GCP mode: front-end and worker are separate
+    # processes) can reconstruct it. Unused by the in-process local mode, which
+    # closes over the request directly.
+    payload: dict | None = None
     progress: Progress = field(default_factory=Progress)
     result: dict | None = None
     error: str | None = None
@@ -48,13 +53,20 @@ class Job:
         return d
 
 
-class JobStore:
+class InMemoryJobStore:
+    """Thread-safe in-memory JobStore (local/dev mode; Firestore stand-in).
+
+    Implements the JobStore method surface (see store.py). Shared by the Phase 1
+    single-process app and reused as the fake in GCP-mode unit tests.
+    """
+
     def __init__(self):
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def create(self, kind: str, model_info: dict) -> Job:
-        job = Job(id=uuid.uuid4().hex, kind=kind, status=QUEUED, model_info=model_info)
+    def create(self, kind: str, model_info: dict, payload: dict | None = None) -> Job:
+        job = Job(id=uuid.uuid4().hex, kind=kind, status=QUEUED,
+                  model_info=model_info, payload=payload)
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -92,3 +104,8 @@ class JobStore:
             job.status = FAILED
             job.error = error
             job.finished_at = time.time()
+
+
+# Back-compat alias: the Phase 1 app imported `JobStore` before the in-memory
+# implementation and the Firestore one were split apart.
+JobStore = InMemoryJobStore
