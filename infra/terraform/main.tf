@@ -57,10 +57,10 @@ resource "google_cloud_tasks_queue" "jobs" {
 
   retry_config {
     # Long jobs + ack-fast worker: retries are safe (idempotent), so allow many.
-    max_attempts       = 10
-    min_backoff        = "10s"
-    max_backoff        = "300s"
-    max_doublings      = 4
+    max_attempts  = 10
+    min_backoff   = "10s"
+    max_backoff   = "300s"
+    max_doublings = 4
   }
 }
 
@@ -119,7 +119,9 @@ resource "google_storage_bucket_iam_member" "worker_gcs" {
 # ── Secret Manager: long-lived shared stego keys / API keys ──────────────────
 resource "google_secret_manager_secret" "api_keys" {
   secret_id = "doublespeak-api-keys"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
   labels = local.labels
 }
 
@@ -127,6 +129,11 @@ resource "google_secret_manager_secret" "api_keys" {
 resource "google_container_cluster" "workers" {
   name     = "doublespeak-workers"
   location = var.zone
+
+  # Defaults to the project's "default" VPC; override for projects without one
+  # (default-network org policy disabled) or a custom-mode network.
+  network    = var.network
+  subnetwork = var.subnetwork != "" ? var.subnetwork : null
 
   remove_default_node_pool = true
   initial_node_count       = 1
@@ -210,8 +217,12 @@ resource "google_cloud_run_v2_service" "frontend" {
         name  = "WORKER_OIDC_SA"
         value = google_service_account.tasks_invoker.email
       }
-      # WORKER_URL is set out-of-band once the GKE worker Service/Ingress has an
-      # address (see infra/README.md) — it is not known at first apply.
+      # Not known at first apply — pass -var worker_url=... on the second apply
+      # once the GKE worker Service/Ingress has an address (see infra/README.md).
+      env {
+        name  = "WORKER_URL"
+        value = var.worker_url
+      }
     }
   }
 }

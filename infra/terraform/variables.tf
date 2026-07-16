@@ -62,10 +62,44 @@ variable "worker_machine_type" {
   description = "GKE node machine type; size vCPU to num_threads (CPU-only inference)."
 }
 
+variable "network" {
+  type        = string
+  default     = "default"
+  description = <<-EOT
+    VPC network for the GKE cluster. Defaults to the project's auto-created
+    "default" network. Projects created with the default-network org policy
+    disabled have no "default" VPC — set this (and subnetwork) to an existing
+    network, or the cluster apply fails with a network-not-found error.
+  EOT
+}
+
+variable "subnetwork" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    VPC subnetwork for the GKE node pool. Empty lets GKE auto-select a subnet in
+    the cluster region from var.network (valid for auto-mode networks like the
+    default VPC). For a custom-mode network, set this to an existing subnet in
+    var.region.
+  EOT
+}
+
 variable "image_frontend" {
   type        = string
   description = "Full Artifact Registry image ref for the front-end (set by Cloud Build)."
   default     = ""
+}
+
+variable "worker_url" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Base URL of the GKE worker Service that Cloud Tasks pushes to. Not known at
+    first apply — set it on the second apply once the worker Service/Ingress has
+    an address. The front-end (gcp/settings.WORKER_URL) requires it and refuses
+    to start without it, so leaving it empty is only valid while image_frontend
+    is also empty (front-end not yet created).
+  EOT
 }
 
 variable "image_worker" {
