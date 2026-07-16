@@ -44,8 +44,18 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    terraform apply -var project_id=YOUR_PROJECT \
      -var gguf_sha256=<sha256 of the GGUF> -var llama_cpp_tag=<pinned tag>
    ```
-   Leave `image_frontend` empty on the first apply — the Cloud Run service is
-   gated on it (`count = image_frontend == "" ? 0 : 1`).
+   Leave `image_frontend` and `worker_url` empty on the first apply — the Cloud
+   Run front-end is gated on `image_frontend` (`count = image_frontend == "" ? 0
+   : 1`) and isn't created yet, and `worker_url` isn't known until the GKE worker
+   Service exists (both are set on the second apply, step 6).
+
+   **Networking:** the GKE cluster defaults to the project's auto-created
+   `default` VPC. Projects created with the default-network org policy disabled
+   have no `default` network and the apply fails with a network-not-found error —
+   check with `gcloud compute networks list` and, if needed, pass
+   `-var network=<vpc>` (and `-var subnetwork=<subnet in var.region>` for a
+   custom-mode network; leave it empty to let GKE auto-select on an auto-mode
+   network).
 3. **Upload the model** to the assets bucket at `var.gguf_object`:
    ```
    gsutil cp Phi-3.5-mini-instruct-Q4_K_M.gguf \
@@ -64,9 +74,13 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    kubectl apply -f infra/k8s/worker-service.yaml
    kubectl apply -f infra/k8s/worker-hpa.yaml   # needs the Custom Metrics Adapter
    ```
-6. **Wire the worker URL back**: get the worker Service's internal address, set it
-   as `WORKER_URL`, then re-apply Terraform with `image_frontend` set so the
-   Cloud Run front-end comes up pointing at the queue + worker.
+6. **Wire the worker URL back**: get the worker Service's internal address, then
+   re-apply Terraform with both `-var image_frontend=<ref>` and
+   `-var worker_url=http://<worker-address>` set, so the Cloud Run front-end
+   comes up pointing at the queue + worker. (`worker_url` becomes the front-end's
+   `WORKER_URL` env — the front-end refuses to start without it.) The worker
+   Service is `ClusterIP`, so for Cloud Tasks to reach it from outside the cluster
+   you must expose it via an internal LB / Ingress (Phase 4 hardening).
 
 ## Known follow-ups (Phase 4 "Harden")
 
