@@ -178,6 +178,11 @@ ExternalProject_Add(llama_server_build
     GIT_PROGRESS     TRUE
     CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=Release
+        # Static build: llama-server must be self-contained. The copy_llama_server
+        # target copies ONLY the executable; a shared build's libllama/libggml*.so
+        # stay behind in the ExternalProject tree (masked locally by RPATH, fatal
+        # in the Docker worker image — exit 127 at container start).
+        -DBUILD_SHARED_LIBS=OFF
         -DLLAMA_BUILD_SERVER=ON
         -DLLAMA_BUILD_TESTS=OFF
         -DLLAMA_BUILD_EXAMPLES=ON

@@ -63,7 +63,12 @@ spec:
           volumeMounts:
             - { name: models, mountPath: /models }
           resources:
-            requests: { cpu: "4", memory: "6Gi" }
+            # Request 3 (not 4): a 4-vCPU node only has ~3.92 allocatable after
+            # system daemons, and the worker container requests another 250m —
+            # a request of 4 here makes the pod unschedulable on any 4-vCPU
+            # node. Limit stays 4; determinism comes from the fixed --threads
+            # value, not the CPU share.
+            requests: { cpu: "3", memory: "6Gi" }
             limits:   { cpu: "4", memory: "8Gi" }
 
         # FastAPI worker — receives Cloud Tasks pushes, drives encode/decode.

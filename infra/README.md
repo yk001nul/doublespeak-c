@@ -35,8 +35,12 @@ because any worker can pick up any job. Raising `num_threads` re-validates
 
 ## Apply order (once you have a project)
 
-1. **Enable APIs**: run, cloudtasks, firestore, container, artifactregistry,
-   secretmanager, monitoring, cloudbuild.
+1. **Enable APIs**: cloudresourcemanager, iam, iamcredentials, run, cloudtasks,
+   firestore, container, artifactregistry, secretmanager, monitoring, cloudbuild.
+   (cloudresourcemanager + iam are required *before* the first apply — the
+   `google_project_iam_member` resources read/modify the project IAM policy
+   through Cloud Resource Manager; without it apply 403s after the GKE cluster
+   is already created.)
 2. **Terraform** (creates registry, bucket, Firestore, queue, GKE, IAM):
    ```
    cd infra/terraform
@@ -64,8 +68,11 @@ because any worker can pick up any job. Raising `num_threads` re-validates
 4. **Build + push images**:
    ```
    gcloud builds submit --config infra/cloudbuild/cloudbuild.yaml \
-     --substitutions=_REGION=us-central1,_REPO=doublespeak
+     --substitutions=_REGION=us-central1,_REPO=doublespeak,SHORT_SHA=$(git rev-parse --short HEAD)
    ```
+   `SHORT_SHA` is only auto-populated for trigger builds; a manual
+   `gcloud builds submit` leaves it empty and the image tags come out invalid,
+   so pass it explicitly as above.
 5. **Deploy workers** (fill the `REPLACE_*` placeholders — project id, worker
    image ref, GGUF SHA, llama.cpp tag — via kustomize/envsubst):
    ```
@@ -74,6 +81,16 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    kubectl apply -f infra/k8s/worker-service.yaml
    kubectl apply -f infra/k8s/worker-hpa.yaml   # needs the Custom Metrics Adapter
    ```
+
+   **Zone stockout:** if worker pods sit `Pending` with "no nodes available" and
+   `gcloud compute instance-groups managed list-errors <MIG> --zone <zone>`
+   shows `ZONE_RESOURCE_POOL_EXHAUSTED`, the zone is out of that machine type —
+   a transient GCP capacity issue, not quota or config. Re-apply Terraform with
+   a different `-var zone=...` (and consider `-var worker_machine_type=
+   e2-standard-4`; E2 is less stockout-prone than N2). The cluster is zonal, so
+   changing the zone **recreates the cluster** — harmless before anything runs
+   on it. Afterwards re-run `gcloud container clusters get-credentials` with the
+   new `--zone` and redo the `kubectl apply` steps above.
 6. **Wire the worker URL back**: get the worker Service's internal address, then
    re-apply Terraform with both `-var image_frontend=<ref>` and
    `-var worker_url=http://<worker-address>` set, so the Cloud Run front-end
