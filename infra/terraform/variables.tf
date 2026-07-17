@@ -58,8 +58,8 @@ variable "worker_max_replicas" {
 
 variable "worker_machine_type" {
   type        = string
-  default     = "n2-standard-4"
-  description = "GKE node machine type; size vCPU to num_threads (CPU-only inference)."
+  default     = "e2-standard-4"
+  description = "GKE node machine type; size vCPU to num_threads (CPU-only inference). E2 default: less stockout-prone than N2 and draws on the general CPU quota."
 }
 
 variable "network" {

@@ -140,6 +140,14 @@ resource "google_container_cluster" "workers" {
   deletion_protection      = false
 
   workload_identity_config { workload_pool = "${var.project_id}.svc.id.goog" }
+
+  # Cluster create/delete regularly exceeds the provider's default window when
+  # the zone is under capacity pressure; give it headroom instead of tainting.
+  timeouts {
+    create = "45m"
+    update = "45m"
+    delete = "45m"
+  }
 }
 
 resource "google_container_node_pool" "worker_pool" {
@@ -158,6 +166,14 @@ resource "google_container_node_pool" "worker_pool" {
     labels       = local.labels
 
     workload_metadata_config { mode = "GKE_METADATA" }
+  }
+
+  # Pool creation blocks until min_node_count nodes are Ready — under zone
+  # capacity pressure that can outlast the default timeout and taint the pool.
+  timeouts {
+    create = "45m"
+    update = "45m"
+    delete = "45m"
   }
 }
 
