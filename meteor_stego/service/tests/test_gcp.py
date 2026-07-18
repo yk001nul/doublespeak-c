@@ -115,6 +115,7 @@ def worker():
     worker_app.state.store = None
     worker_app.state.run_job = None
     worker_app.state.slot = None
+    worker_app.state.verify_oidc = None
 
 
 def _seed_job(store, kind="encode"):
@@ -166,6 +167,55 @@ def test_worker_single_slot_rejects_when_busy(worker):
         assert store.get(job.id).status == QUEUED  # untouched
     finally:
         worker_app.state.slot.release()
+
+
+# ── Worker OIDC enforcement ──────────────────────────────────────────────────
+
+def test_worker_oidc_disabled_allows_no_token(worker):
+    # Default (REQUIRE_OIDC off) — the existing behaviour: no token needed.
+    client, store, ran, done = worker
+    job = _seed_job(store)
+    r = client.post("/internal/run", json={"job_id": job.id, "kind": "encode"})
+    assert r.status_code == 200
+    assert done.wait(5)
+
+
+def test_worker_oidc_required_rejects_missing_token(worker, monkeypatch):
+    # With enforcement on and no injected verifier, the real verifier runs and
+    # rejects a request that carries no bearer token — 401, before any job work
+    # (and without importing the google libraries, since the header check is
+    # first). ran stays empty.
+    from meteor_stego.service.gcp import settings
+    monkeypatch.setattr(settings, "REQUIRE_OIDC", True)
+    client, store, ran, done = worker
+    job = _seed_job(store)
+    r = client.post("/internal/run", json={"job_id": job.id, "kind": "encode"})
+    assert r.status_code == 401
+    assert ran == []
+    assert store.get(job.id).status == QUEUED  # untouched
+
+
+def test_worker_oidc_required_runs_with_valid_token(worker, monkeypatch):
+    # Enforcement on, but a fake verifier accepts (stands in for a real Google
+    # token) — the job runs. Proves the accept path is wired through.
+    from meteor_stego.service.gcp import settings
+    monkeypatch.setattr(settings, "REQUIRE_OIDC", True)
+    worker_app.state.verify_oidc = lambda request: None  # accept
+    client, store, ran, done = worker
+    job = _seed_job(store)
+    r = client.post("/internal/run", json={"job_id": job.id, "kind": "encode"},
+                    headers={"Authorization": "Bearer faketoken"})
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert ran and ran[0][0] == job.id
+
+
+def test_oidc_helper_rejects_bad_headers():
+    from meteor_stego.service.gcp import oidc
+    for bad in (None, "", "Token abc", "Bearer", "Bearer   "):
+        with pytest.raises(oidc.OIDCError) as ei:
+            oidc.verify_bearer_token(bad, expected_audience="http://x", allowed_sa="sa@x")
+        assert ei.value.status == 401  # missing/malformed → 401, no google import
 
 
 # ── GCS SHA verification ─────────────────────────────────────────────────────

@@ -43,6 +43,22 @@ def _default_run_job(job_id: str, kind: str, payload: dict, store) -> None:
         raise ValueError(f"unknown job kind: {kind}")
 
 
+def _default_verify_oidc(request: Request):
+    """Validate the incoming Cloud Tasks OIDC token, or return a rejection
+    response. Returns None when the token is accepted. Imports gcp.oidc lazily so
+    the fake-backed tests that never enable REQUIRE_OIDC stay google-free."""
+    from . import oidc  # lazy
+    try:
+        oidc.verify_bearer_token(
+            request.headers.get("authorization"),
+            expected_audience=settings.WORKER_OIDC_AUDIENCE,
+            allowed_sa=settings.WORKER_OIDC_SA)
+    except oidc.OIDCError as exc:
+        log.warning("rejected /internal/run push: %s", exc)
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not getattr(app.state, "store", None):
@@ -57,6 +73,8 @@ async def lifespan(app: FastAPI):
         app.state.run_job = _default_run_job
     if not getattr(app.state, "slot", None):
         app.state.slot = threading.Lock()
+    if not getattr(app.state, "verify_oidc", None):
+        app.state.verify_oidc = _default_verify_oidc
     yield
 
 
@@ -65,6 +83,14 @@ app = FastAPI(title="doublespeak stego worker", version="0.2.0", lifespan=lifesp
 
 @app.post("/internal/run")
 async def run(request: Request, background: BackgroundTasks):
+    # The endpoint is publicly reachable (Cloud Tasks only pushes to public
+    # URLs), so authenticate the caller before anything else. Skipped only when
+    # REQUIRE_OIDC is off (local/dev + fake-backed tests).
+    if settings.REQUIRE_OIDC:
+        rejection = request.app.state.verify_oidc(request)
+        if rejection is not None:
+            return rejection
+
     body = await request.json()
     job_id, kind = body.get("job_id"), body.get("kind")
     if not job_id or not kind:

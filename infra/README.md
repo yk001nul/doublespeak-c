@@ -74,13 +74,23 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    `gcloud builds submit` leaves it empty and the image tags come out invalid,
    so pass it explicitly as above.
 5. **Deploy workers** (fill the `REPLACE_*` placeholders — project id, worker
-   image ref, GGUF SHA, llama.cpp tag — via kustomize/envsubst):
+   image ref, GGUF SHA, llama.cpp tag, and `REPLACE_WORKER_URL` = the reserved
+   Ingress IP as `http://<terraform output worker_ingress_ip>` — via
+   kustomize/envsubst):
    ```
    kubectl apply -f infra/k8s/configmap.yaml
    kubectl apply -f infra/k8s/worker-deployment.yaml
    kubectl apply -f infra/k8s/worker-service.yaml
-   kubectl apply -f infra/k8s/worker-hpa.yaml   # needs the Custom Metrics Adapter
+   kubectl apply -f infra/k8s/worker-ingress.yaml   # external HTTP LB for Cloud Tasks
+   kubectl apply -f infra/k8s/worker-hpa.yaml       # needs the Custom Metrics Adapter
    ```
+   The Ingress binds the reserved static IP (`worker_ingress_ip`) and provisions
+   an external HTTP LB — this takes a few minutes. Watch it come up:
+   ```
+   kubectl -n doublespeak get ingress doublespeak-worker -w
+   ```
+   `WORKER_OIDC_AUDIENCE` in the ConfigMap MUST equal the `worker_url` you pass
+   in step 6 (same `http://<ip>`), or the worker rejects every push with 401/403.
 
    **Zone stockout:** if worker pods sit `Pending` with "no nodes available" and
    `gcloud compute instance-groups managed list-errors <MIG> --zone <zone>`
@@ -91,19 +101,30 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    changing the zone **recreates the cluster** — harmless before anything runs
    on it. Afterwards re-run `gcloud container clusters get-credentials` with the
    new `--zone` and redo the `kubectl apply` steps above.
-6. **Wire the worker URL back**: get the worker Service's internal address, then
-   re-apply Terraform with both `-var image_frontend=<ref>` and
-   `-var worker_url=http://<worker-address>` set, so the Cloud Run front-end
-   comes up pointing at the queue + worker. (`worker_url` becomes the front-end's
-   `WORKER_URL` env — the front-end refuses to start without it.) The worker
-   Service is `ClusterIP`, so for Cloud Tasks to reach it from outside the cluster
-   you must expose it via an internal LB / Ingress (Phase 4 hardening).
+6. **Wire the worker URL back**: the worker's public address is the reserved
+   Ingress IP. Re-apply Terraform with both `-var image_frontend=<ref>` and
+   `-var worker_url=http://$(terraform output -raw worker_ingress_ip)` set, so the
+   Cloud Run front-end comes up pointing at the queue + worker. (`worker_url`
+   becomes the front-end's `WORKER_URL` env — the front-end refuses to start
+   without it — and Cloud Tasks signs each push's OIDC token with it as the
+   audience, which the worker validates against `WORKER_OIDC_AUDIENCE`.) These two
+   values must be byte-identical.
+7. **Verify end-to-end**: `POST /v1/encode` on the front-end URL (returns 202 +
+   `job_id`), then poll `GET /v1/jobs/{job_id}` — it should walk `queued →
+   running → done` with the recovered covertext. A job stuck in `queued` means
+   Cloud Tasks can't deliver (check the Ingress has an ADDRESS and the worker
+   pod is Ready); repeated `running → queued` retries with 401/403 in the worker
+   logs mean the OIDC audience/SA don't match the ConfigMap.
 
 ## Known follow-ups (Phase 4 "Harden")
 
-- The worker `/internal/run` must sit behind an OIDC-validating proxy / IAP so
-  only the Cloud Tasks invoker SA can reach it (the queue attaches an OIDC token;
-  the endpoint should verify it). The manifests leave it ClusterIP with a note.
+- ~~OIDC validation at the worker `/internal/run`.~~ **Done** — the worker
+  verifies the Cloud Tasks OIDC token (`WORKER_REQUIRE_OIDC`, `gcp/oidc.py`):
+  signature + audience (`WORKER_OIDC_AUDIENCE`) + caller identity
+  (`WORKER_OIDC_SA`). The endpoint is public (behind the HTTP LB) but
+  authenticated per-request.
+- **TLS on the worker LB**: currently HTTP only (`worker_url=http://<ip>`); the
+  OIDC token rides in plaintext. Add a domain + `ManagedCertificate` for HTTPS.
 - Front-end auth/quota via API Gateway; webhooks (`callback_url`); observability
   dashboards; per-identity Secret Manager stego keys.
 - The queue-depth HPA needs the Custom Metrics Stackdriver Adapter installed.

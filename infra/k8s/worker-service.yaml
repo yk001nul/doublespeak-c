@@ -1,13 +1,16 @@
-# Internal Service fronting the worker pods. Cloud Tasks pushes to this address
-# (set as WORKER_URL on the front-end). ClusterIP by default — expose via an
-# internal Ingress / Gateway with IAP or an OIDC-validating proxy so only the
-# Cloud Tasks invoker SA can reach /internal/run.
+# Service fronting the worker pods, exposed to Cloud Tasks via worker-ingress.yaml
+# (external HTTP LB). Stays ClusterIP: the `cloud.google.com/neg` annotation turns
+# on container-native load balancing (NEG) so the Ingress LB routes straight to
+# the pod on a VPC-native cluster — no NodePort needed. Public exposure is safe
+# because /internal/run validates the Cloud Tasks OIDC token (WORKER_REQUIRE_OIDC).
 apiVersion: v1
 kind: Service
 metadata:
   name: doublespeak-worker
   namespace: doublespeak
   labels: { app: doublespeak-worker }
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
   selector: { app: doublespeak-worker }
   ports:
