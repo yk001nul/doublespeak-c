@@ -1,0 +1,38 @@
+# External HTTP load balancer that lets Cloud Tasks reach the worker.
+#
+# Cloud Tasks only pushes to PUBLIC URLs, so the worker's /internal/run has to be
+# internet-reachable. This is an external L7 HTTP LB (gce Ingress class) on a
+# reserved static IP (Terraform google_compute_global_address "worker_ingress",
+# referenced here by name). Only /internal/run is routed; every other path falls
+# through to the default backend (404). The endpoint is unauthenticated at the
+# LB — the worker itself validates the Cloud Tasks OIDC token on every request
+# (WORKER_REQUIRE_OIDC in the ConfigMap), which is what keeps it safe.
+#
+# HTTP only for now (matches worker_url=http://<ip>). TLS needs a domain +
+# ManagedCertificate; add later without changing the OIDC path.
+#
+# The LB backend health check is derived from the pod's readiness probe
+# (/readyz on 8000), so no BackendConfig is needed. Provisioning the LB after
+# `kubectl apply` takes a few minutes; watch `kubectl -n doublespeak get ingress
+# doublespeak-worker -w` until ADDRESS shows the reserved IP and it serves 200.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: doublespeak-worker
+  namespace: doublespeak
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    # Reserved global static IP by name (Terraform creates it); keeps worker_url
+    # stable across Ingress recreation.
+    kubernetes.io/ingress.global-static-ip-name: "doublespeak-worker-ip"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /internal/run
+            pathType: Prefix
+            backend:
+              service:
+                name: doublespeak-worker
+                port:
+                  number: 80

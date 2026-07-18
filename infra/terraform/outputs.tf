@@ -27,6 +27,11 @@ output "tasks_invoker_service_account" {
   description = "OIDC identity Cloud Tasks uses to push to the worker (WORKER_OIDC_SA)."
 }
 
+output "worker_ingress_ip" {
+  value       = google_compute_global_address.worker_ingress.address
+  description = "Reserved static IP for the worker Ingress HTTP LB. Use http://<ip> as -var worker_url on the 3rd apply and as WORKER_OIDC_AUDIENCE in the worker ConfigMap."
+}
+
 output "frontend_url" {
   value       = length(google_cloud_run_v2_service.frontend) > 0 ? google_cloud_run_v2_service.frontend[0].uri : ""
   description = "Public front-end URL (empty until image_frontend is set)."

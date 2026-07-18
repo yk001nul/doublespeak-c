@@ -31,8 +31,21 @@ TASKS_QUEUE    = _req("TASKS_QUEUE")
 TASKS_LOCATION = _opt("TASKS_LOCATION", REGION)
 # The worker's externally reachable base URL that Cloud Tasks pushes to.
 WORKER_URL     = _req("WORKER_URL")
-# Service account whose OIDC token authenticates the push to the worker.
+# Service account whose OIDC token authenticates the push to the worker. Read by
+# BOTH sides: the front-end signs pushes with it (CloudTasksQueue), and the
+# worker validates the incoming token's email against it (see REQUIRE_OIDC).
 WORKER_OIDC_SA = _opt("WORKER_OIDC_SA", "")
+
+# ── Worker ingress auth ──────────────────────────────────────────────────────
+# The worker's /internal/run is reachable over a public LB, so it must reject
+# any push that is not a valid Cloud Tasks OIDC token. Off by default so the
+# fake-backed unit tests (and any local run) need no tokens; the k8s ConfigMap
+# turns it on in the real deployment.
+REQUIRE_OIDC = _opt("WORKER_REQUIRE_OIDC", "false").lower() in ("1", "true", "yes")
+# Expected `aud` claim of the incoming OIDC token. Cloud Tasks signs the push
+# with audience == the front-end's WORKER_URL, so this MUST equal that value
+# (e.g. http://<worker-lb-ip>). Set in the worker ConfigMap.
+WORKER_OIDC_AUDIENCE = _opt("WORKER_OIDC_AUDIENCE", "")
 
 # GCS — pinned model + large payloads
 GCS_BUCKET        = _req("GCS_BUCKET")
@@ -61,4 +74,11 @@ def validate_worker() -> list[str]:
     for name, val in (("GCP_PROJECT", GCP_PROJECT), ("GCS_BUCKET", GCS_BUCKET)):
         if not val:
             missing.append(name)
+    # When OIDC enforcement is on, both the expected audience and the caller SA
+    # must be set — otherwise the worker would accept unauthenticated pushes.
+    if REQUIRE_OIDC:
+        for name, val in (("WORKER_OIDC_AUDIENCE", WORKER_OIDC_AUDIENCE),
+                          ("WORKER_OIDC_SA", WORKER_OIDC_SA)):
+            if not val:
+                missing.append(name)
     return missing

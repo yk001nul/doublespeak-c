@@ -8,3 +8,7 @@
 google-cloud-firestore>=2.19,<3
 google-cloud-tasks>=2.16,<3
 google-cloud-storage>=2.18,<3
+# Used directly by gcp/oidc.py to verify Cloud Tasks OIDC pushes at the worker.
+# (Also a transitive dep of the cloud libs above; pinned here as a direct dep.
+# google.auth.transport.requests needs `requests`, which the cloud libs pull in.)
+google-auth>=2.30,<3

@@ -16,3 +16,12 @@ data:
   # Shared protocol state — must equal the value encoders/decoders use.
   METEOR_NUM_THREADS: "4"
   METEOR_LLM_URL: "http://127.0.0.1:8080"
+  # Ingress auth: /internal/run is public (behind the worker LB), so require a
+  # valid Cloud Tasks OIDC token on every push.
+  WORKER_REQUIRE_OIDC: "true"
+  # Expected `aud` of that token — MUST equal the front-end's worker_url
+  # (-var worker_url on the 3rd terraform apply), i.e. http://<worker-lb-ip>.
+  WORKER_OIDC_AUDIENCE: "REPLACE_WORKER_URL"
+  # Allowed caller identity = the Cloud Tasks invoker SA (Terraform output
+  # tasks_invoker_service_account).
+  WORKER_OIDC_SA: "doublespeak-tasks-invoker@REPLACE_PROJECT_ID.iam.gserviceaccount.com"

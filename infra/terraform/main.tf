@@ -177,6 +177,15 @@ resource "google_container_node_pool" "worker_pool" {
   }
 }
 
+# Reserved global static IP for the worker Ingress (external HTTP LB). The k8s
+# Ingress references this by name (kubernetes.io/ingress.global-static-ip-name =
+# "doublespeak-worker-ip"), so the worker's public address is stable across
+# Ingress recreation. Feed http://<this-ip> back in as -var worker_url on the
+# 3rd apply, and as WORKER_OIDC_AUDIENCE in the worker ConfigMap.
+resource "google_compute_global_address" "worker_ingress" {
+  name = "doublespeak-worker-ip"
+}
+
 # Bind the k8s worker service account to the GCP worker SA (Workload Identity).
 resource "google_service_account_iam_member" "worker_wi" {
   service_account_id = google_service_account.worker.name
