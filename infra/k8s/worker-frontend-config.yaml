@@ -1,0 +1,14 @@
+# Forces HTTP -> HTTPS on the worker LB so the Cloud Tasks OIDC token never
+# rides in plaintext. Cloud Tasks connects to the https:// worker_url directly,
+# so it never sees the redirect; this just closes the plain-http door for
+# anything else that hits the reserved IP. Referenced by the Ingress via the
+# `networking.gke.io/v1beta1.FrontendConfig` annotation.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: doublespeak-worker-frontend-config
+  namespace: doublespeak
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT

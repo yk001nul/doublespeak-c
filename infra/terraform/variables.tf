@@ -118,11 +118,16 @@ variable "worker_url" {
   type        = string
   default     = ""
   description = <<-EOT
-    Base URL of the GKE worker Service that Cloud Tasks pushes to. Not known at
-    first apply — set it on the second apply once the worker Service/Ingress has
-    an address. The front-end (gcp/settings.WORKER_URL) requires it and refuses
-    to start without it, so leaving it empty is only valid while image_frontend
-    is also empty (front-end not yet created).
+    Base URL of the GKE worker Ingress that Cloud Tasks pushes to, and the `aud`
+    it signs each OIDC token with. Not known at first apply — set it once the
+    worker Ingress + managed cert are up: `https://<host>` where <host> is the
+    sslip.io name resolving to the reserved Ingress IP (worker_ingress_ip), e.g.
+    https://35-201-65-159.sslip.io. MUST be byte-identical to the ConfigMap's
+    WORKER_OIDC_AUDIENCE and the managed cert / Ingress host, or the worker 401s
+    every push. Must be https:// — Cloud Tasks refuses to attach an OIDC token to
+    a plain-http target. The front-end (gcp/settings.WORKER_URL) requires it and
+    refuses to start without it, so leaving it empty is only valid while
+    image_frontend is also empty (front-end not yet created).
   EOT
 }
 

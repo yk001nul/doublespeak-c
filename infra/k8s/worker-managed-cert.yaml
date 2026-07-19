@@ -1,0 +1,25 @@
+# Google-managed TLS certificate for the worker LB.
+#
+# WHY THIS EXISTS: Cloud Tasks REFUSES to attach an OIDC token to a plain-http
+# target ("HttpRequest.url must start with 'https://' for request with
+# HttpRequest.authorization_header"), so OIDC auth on /internal/run requires TLS
+# on the worker Ingress. Rather than own a domain, we use sslip.io: the host
+# `<dashed-static-ip>.sslip.io` resolves to the reserved LB IP with zero DNS
+# setup (35.201.65.159 -> 35-201-65-159.sslip.io). Google provisions and
+# auto-renews the cert once the Ingress is serving and the domain resolves to
+# the LB — this takes ~15-60 min. Swap REPLACE_WORKER_HOST for a real domain
+# later (point its A record at the reserved IP) with no other change here.
+#
+# Watch provisioning:
+#   kubectl -n doublespeak get managedcertificate doublespeak-worker-cert \
+#     -o jsonpath='{.status.certificateStatus}{"\n"}'
+# until it reads `Active` (Provisioning -> Active). FailedNotVisible means the
+# domain doesn't yet resolve to the LB IP or the Ingress isn't serving yet.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: doublespeak-worker-cert
+  namespace: doublespeak
+spec:
+  domains:
+    - REPLACE_WORKER_HOST # e.g. 35-201-65-159.sslip.io — MUST match the Ingress host + WORKER_OIDC_AUDIENCE

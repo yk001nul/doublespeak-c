@@ -16,12 +16,16 @@ data:
   # Shared protocol state — must equal the value encoders/decoders use.
   METEOR_NUM_THREADS: "4"
   METEOR_LLM_URL: "http://127.0.0.1:8080"
-  # Ingress auth: /internal/run is public (behind the worker LB), so require a
-  # valid Cloud Tasks OIDC token on every push.
+  # Ingress auth: /internal/run is public (behind the worker HTTPS LB), so
+  # require a valid Cloud Tasks OIDC token on every push.
   WORKER_REQUIRE_OIDC: "true"
   # Expected `aud` of that token — MUST equal the front-end's worker_url
-  # (-var worker_url on the 3rd terraform apply), i.e. http://<worker-lb-ip>.
-  WORKER_OIDC_AUDIENCE: "REPLACE_WORKER_URL"
+  # (-var worker_url on the terraform apply), i.e. https://<worker-host>. The
+  # host is the sslip.io name that resolves to the reserved Ingress IP
+  # (35.201.65.159 -> 35-201-65-159.sslip.io), matching the managed cert +
+  # Ingress host. (Was http://<ip> before TLS; Cloud Tasks won't attach OIDC to
+  # a plain-http target, so the audience must be the https:// URL now.)
+  WORKER_OIDC_AUDIENCE: "https://REPLACE_WORKER_HOST"
   # Allowed caller identity = the Cloud Tasks invoker SA (Terraform output
   # tasks_invoker_service_account).
   WORKER_OIDC_SA: "doublespeak-tasks-invoker@REPLACE_PROJECT_ID.iam.gserviceaccount.com"

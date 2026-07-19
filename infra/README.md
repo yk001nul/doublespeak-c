@@ -74,23 +74,40 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    `gcloud builds submit` leaves it empty and the image tags come out invalid,
    so pass it explicitly as above.
 5. **Deploy workers** (fill the `REPLACE_*` placeholders — project id, worker
-   image ref, GGUF SHA, llama.cpp tag, and `REPLACE_WORKER_URL` = the reserved
-   Ingress IP as `http://<terraform output worker_ingress_ip>` — via
-   kustomize/envsubst):
+   image ref, GGUF SHA, llama.cpp tag, and `REPLACE_WORKER_HOST` = the sslip.io
+   name for the reserved Ingress IP, i.e. `<dashed-ip>.sslip.io` such as
+   `35-201-65-159.sslip.io` for `35.201.65.159` — via kustomize/envsubst). Derive
+   the host: `WORKER_HOST=$(terraform output -raw worker_ingress_ip | tr '.' '-').sslip.io`.
    ```
    kubectl apply -f infra/k8s/configmap.yaml
    kubectl apply -f infra/k8s/worker-deployment.yaml
    kubectl apply -f infra/k8s/worker-service.yaml
-   kubectl apply -f infra/k8s/worker-ingress.yaml   # external HTTP LB for Cloud Tasks
-   kubectl apply -f infra/k8s/worker-hpa.yaml       # needs the Custom Metrics Adapter
+   kubectl apply -f infra/k8s/worker-frontend-config.yaml  # HTTP->HTTPS redirect
+   kubectl apply -f infra/k8s/worker-managed-cert.yaml     # Google-managed TLS cert
+   kubectl apply -f infra/k8s/worker-ingress.yaml          # external HTTPS LB for Cloud Tasks
+   kubectl apply -f infra/k8s/worker-hpa.yaml              # needs the Custom Metrics Adapter
    ```
    The Ingress binds the reserved static IP (`worker_ingress_ip`) and provisions
-   an external HTTP LB — this takes a few minutes. Watch it come up:
+   an external HTTPS LB. The LB comes up in a few minutes but the **managed cert
+   takes 15-60 min** to go `Active`. Watch both:
    ```
    kubectl -n doublespeak get ingress doublespeak-worker -w
+   kubectl -n doublespeak get managedcertificate doublespeak-worker-cert \
+     -o jsonpath='{.status.certificateStatus}{"\n"}'      # wait for Active
    ```
-   `WORKER_OIDC_AUDIENCE` in the ConfigMap MUST equal the `worker_url` you pass
-   in step 6 (same `http://<ip>`), or the worker rejects every push with 401/403.
+   **Do not run step 6 (turn OIDC back on) until the cert reads `Active`** — Cloud
+   Tasks can't complete the TLS handshake before then, and every push fails.
+   `WORKER_OIDC_AUDIENCE` in the ConfigMap MUST equal the `worker_url` you pass in
+   step 6 (both `https://<WORKER_HOST>`), or the worker rejects every push with
+   401/403.
+
+   **Cert stuck in `Provisioning` past ~60 min?** First confirm the host resolves
+   to the LB IP (`nslookup <WORKER_HOST>` → reserved IP). If DNS is fine but it
+   still won't go `Active`, the HTTP->HTTPS redirect can occasionally block
+   validation — temporarily remove the `networking.gke.io/v1beta1.FrontendConfig`
+   annotation from the Ingress (`kubectl -n doublespeak annotate ingress
+   doublespeak-worker networking.gke.io/v1beta1.FrontendConfig-`), wait for
+   `Active`, then re-add it (re-apply `worker-ingress.yaml`).
 
    **Zone stockout:** if worker pods sit `Pending` with "no nodes available" and
    `gcloud compute instance-groups managed list-errors <MIG> --zone <zone>`
@@ -101,14 +118,18 @@ because any worker can pick up any job. Raising `num_threads` re-validates
    changing the zone **recreates the cluster** — harmless before anything runs
    on it. Afterwards re-run `gcloud container clusters get-credentials` with the
    new `--zone` and redo the `kubectl apply` steps above.
-6. **Wire the worker URL back**: the worker's public address is the reserved
-   Ingress IP. Re-apply Terraform with both `-var image_frontend=<ref>` and
-   `-var worker_url=http://$(terraform output -raw worker_ingress_ip)` set, so the
-   Cloud Run front-end comes up pointing at the queue + worker. (`worker_url`
-   becomes the front-end's `WORKER_URL` env — the front-end refuses to start
-   without it — and Cloud Tasks signs each push's OIDC token with it as the
-   audience, which the worker validates against `WORKER_OIDC_AUDIENCE`.) These two
-   values must be byte-identical.
+6. **Wire the worker URL back + turn OIDC on** (only once the managed cert is
+   `Active`): re-apply Terraform with `-var image_frontend=<ref>` and
+   `-var worker_url=https://<WORKER_HOST>` (the sslip.io host, e.g.
+   `https://35-201-65-159.sslip.io`), so the Cloud Run front-end comes up pointing
+   at the queue + worker. (`worker_url` becomes the front-end's `WORKER_URL` env —
+   the front-end refuses to start without it — and Cloud Tasks signs each push's
+   OIDC token with it as the audience, which the worker validates against
+   `WORKER_OIDC_AUDIENCE`.) These two values must be byte-identical, and both must
+   be `https://` — Cloud Tasks refuses to attach an OIDC token to a plain-http
+   target. This apply also re-asserts `WORKER_OIDC_SA` on the front-end (`main.tf`
+   sets it unconditionally), so if you had dropped OIDC for a plain-http bring-up,
+   this is the step that turns authentication back on.
 7. **Verify end-to-end**: `POST /v1/encode` on the front-end URL (returns 202 +
    `job_id`), then poll `GET /v1/jobs/{job_id}` — it should walk `queued →
    running → done` with the recovered covertext. A job stuck in `queued` means
@@ -123,8 +144,13 @@ because any worker can pick up any job. Raising `num_threads` re-validates
   signature + audience (`WORKER_OIDC_AUDIENCE`) + caller identity
   (`WORKER_OIDC_SA`). The endpoint is public (behind the HTTP LB) but
   authenticated per-request.
-- **TLS on the worker LB**: currently HTTP only (`worker_url=http://<ip>`); the
-  OIDC token rides in plaintext. Add a domain + `ManagedCertificate` for HTTPS.
+- ~~TLS on the worker LB.~~ **Done** — the worker Ingress serves HTTPS via a
+  Google-managed cert (`k8s/worker-managed-cert.yaml`) for the sslip.io host that
+  resolves to the reserved IP, with an HTTP->HTTPS redirect
+  (`k8s/worker-frontend-config.yaml`). `worker_url`/`WORKER_OIDC_AUDIENCE` are now
+  `https://<host>`. Swap the sslip.io host for an owned domain (A record → the
+  reserved IP) when ready, with no other change. This also unblocks OIDC: Cloud
+  Tasks only attaches its token to an `https://` target.
 - Front-end auth/quota via API Gateway; webhooks (`callback_url`); observability
   dashboards; per-identity Secret Manager stego keys.
 - The queue-depth HPA needs the Custom Metrics Stackdriver Adapter installed.
