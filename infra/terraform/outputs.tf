@@ -36,3 +36,8 @@ output "frontend_url" {
   value       = length(google_cloud_run_v2_service.frontend) > 0 ? google_cloud_run_v2_service.frontend[0].uri : ""
   description = "Public front-end URL (empty until image_frontend is set)."
 }
+
+output "dashboard_url" {
+  value       = "https://console.cloud.google.com/monitoring/dashboards/builder/${reverse(split("/", google_monitoring_dashboard.frontdoor.id))[0]}?project=${var.project_id}"
+  description = "Cloud Monitoring 'front door' dashboard (request rate/latency, queue depth, instance count)."
+}

@@ -131,3 +131,45 @@ variable "image_worker" {
   description = "Full Artifact Registry image ref for the worker (set by Cloud Build)."
   default     = ""
 }
+
+# ── Observability + turn-down (DDoS blast-radius control) ─────────────────────
+
+variable "frontend_max_instances" {
+  type        = number
+  default     = 10
+  description = <<-EOT
+    Hard ceiling on Cloud Run front-end instances. Bounds cost + blast radius
+    under a request flood: past this, Cloud Run queues/sheds excess requests
+    instead of scaling (and billing) without limit. Raise for real traffic;
+    lower it (or use the kill-switch runbook) during an incident.
+  EOT
+}
+
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Email address for Cloud Monitoring alert notifications. Empty => the alert
+    policies are still created (visible in the console) but no notification
+    channel is attached, so they won't email anyone. Set this to actually get
+    paged on a request spike / 5xx surge / queue backlog.
+  EOT
+}
+
+variable "alert_request_rate_threshold" {
+  type        = number
+  default     = 20
+  description = "Front-end requests/sec (summed across instances) above which the request-spike alert fires — possible abuse/DDoS. Tune to expected traffic."
+}
+
+variable "alert_5xx_rate_threshold" {
+  type        = number
+  default     = 1
+  description = "Front-end 5xx responses/sec above which the server-error alert fires."
+}
+
+variable "alert_queue_depth_threshold" {
+  type        = number
+  default     = 25
+  description = "Cloud Tasks meteor-jobs backlog depth above which the queue-backlog alert fires (flood, or stalled/insufficient workers)."
+}
