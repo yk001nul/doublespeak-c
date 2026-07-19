@@ -208,7 +208,11 @@ resource "google_cloud_run_v2_service" "frontend" {
 
   template {
     service_account = google_service_account.frontend.email
-    scaling { min_instance_count = 0 } # front-end can scale to zero
+
+    scaling {
+      min_instance_count = 0                          # front-end can scale to zero
+      max_instance_count = var.frontend_max_instances # cap blast radius under a flood
+    }
 
     containers {
       image = var.image_frontend

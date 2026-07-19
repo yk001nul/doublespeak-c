@@ -125,6 +125,15 @@ because any worker can pick up any job. Raising `num_threads` re-validates
   authenticated per-request.
 - **TLS on the worker LB**: currently HTTP only (`worker_url=http://<ip>`); the
   OIDC token rides in plaintext. Add a domain + `ManagedCertificate` for HTTPS.
-- Front-end auth/quota via API Gateway; webhooks (`callback_url`); observability
-  dashboards; per-identity Secret Manager stego keys.
+- ~~Observability dashboards.~~ **Done** — `terraform/monitoring.tf` adds a
+  "front door" dashboard (request rate by response class, p95 latency, queue
+  depth, instance count), alert policies (request spike / 5xx surge / queue
+  backlog → `var.alert_email`), and a Cloud Run `max_instance_count` cap
+  (`var.frontend_max_instances`). Emergency turn-down levers (pause queue,
+  re-privatize, scale workers to 0) are documented in `infra/RUNBOOK.md`.
+- Front-end auth/quota via API Gateway; webhooks (`callback_url`); per-identity
+  Secret Manager stego keys.
+- **Cloud Armor** (external Application LB + serverless NEG in front of Cloud Run)
+  for per-IP rate limiting + L7 DDoS Adaptive Protection — the real public-facing
+  defense, deferred to the go-public step.
 - The queue-depth HPA needs the Custom Metrics Stackdriver Adapter installed.
