@@ -58,8 +58,32 @@ variable "worker_max_replicas" {
 
 variable "worker_machine_type" {
   type        = string
-  default     = "e2-standard-4"
-  description = "GKE node machine type; size vCPU to num_threads (CPU-only inference). E2 default: less stockout-prone than N2 and draws on the general CPU quota."
+  default     = "c2-standard-4"
+  description = <<-EOT
+    GKE node machine type; size vCPU to num_threads (CPU-only inference).
+    DETERMINISM: use a single-CPU-platform family so every autoscaled node runs
+    byte-identical ggml float math. c2-* is always Intel Cascade Lake, so the
+    whole pool is float-identical by construction (4 vCPU / 16 GB — fits threads=4
+    + the --no-mmap GGUF). Do NOT use e2-* for a multi-node pool: E2 runs on a mix
+    of host CPUs (Broadwell..Ice Lake, Intel or AMD) and does not support
+    min_cpu_platform, so different nodes can select different SIMD kernels (AVX2 vs
+    AVX-512) and desync encode/decode silently. N2 is an alternative but needs
+    node_min_cpu_platform pinned to floor the ISA.
+  EOT
+}
+
+variable "node_min_cpu_platform" {
+  type        = string
+  default     = "Intel Cascade Lake"
+  description = <<-EOT
+    Floors the CPU microarchitecture of every worker node so ggml dispatches the
+    SAME SIMD kernel (and thus the same float reduction order) on all nodes —
+    required for cross-node encode/decode lockstep once the pool autoscales past
+    one node. Matches the c2-* default (always Cascade Lake). For N2 set to
+    "Intel Ice Lake" (or the floor you want). Empty string => null (GKE picks; NOT
+    determinism-safe, only valid for a permanently single-node pool). Ignored by
+    families that don't support it (E2) — another reason not to use E2 here.
+  EOT
 }
 
 variable "network" {
