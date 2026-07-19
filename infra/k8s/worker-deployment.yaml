@@ -63,12 +63,18 @@ spec:
           volumeMounts:
             - { name: models, mountPath: /models }
           resources:
-            # Request 3 (not 4): a 4-vCPU node only has ~3.92 allocatable after
-            # system daemons, and the worker container requests another 250m —
-            # a request of 4 here makes the pod unschedulable on any 4-vCPU
-            # node. Limit stays 4; determinism comes from the fixed --threads
-            # value, not the CPU share.
-            requests: { cpu: "3", memory: "6Gi" }
+            # Request 2 (not 3/4): keeps the whole pod's requests low enough that
+            # GKE's system Deployment pods (kube-dns, metrics-server, ...) fit
+            # ALONGSIDE the worker on a SINGLE c2-standard-4 node, instead of the
+            # autoscaler spinning up a 2nd ~$150/mo C2 node just for them. Limit
+            # stays 4, and the node has 4 physical vCPU that llama bursts to when
+            # system pods are idle (which is almost always), so throughput is
+            # unaffected in practice. Determinism comes from the fixed --threads
+            # value, not the CPU share, so a lower request is safe. VERIFY after
+            # apply: `kubectl -n doublespeak get nodes` should show ONE C2 node;
+            # if still two, the system footprint is larger than expected — lower
+            # further or add a small dedicated system node pool.
+            requests: { cpu: "2", memory: "6Gi" }
             limits:   { cpu: "4", memory: "8Gi" }
 
         # FastAPI worker — receives Cloud Tasks pushes, drives encode/decode.

@@ -178,3 +178,37 @@ variable "alert_queue_depth_threshold" {
   default     = 25
   description = "Cloud Tasks meteor-jobs backlog depth above which the queue-backlog alert fires (flood, or stalled/insufficient workers)."
 }
+
+# ── Scheduled cost scaling (interim; opt-in) ─────────────────────────────────
+
+variable "cost_schedule_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Opt-in daily scale-down of the C2 worker pool to 0 nodes during idle hours
+    (Cloud Run job driven by two Cloud Scheduler crons; see cost_schedule.tf).
+    Default false: none of the scaler resources are created until you set this
+    true on a terraform apply. Only enable once you know the traffic has a
+    genuinely idle window — during the down window the queue is paused and jobs
+    wait until scale-up. Test the job by hand before trusting the schedule
+    (infra/RUNBOOK.md).
+  EOT
+}
+
+variable "scale_down_cron" {
+  type        = string
+  default     = "0 0 * * *"
+  description = "Cron (in schedule_timezone) to scale the worker pool to 0 + pause the queue. Default 00:00."
+}
+
+variable "scale_up_cron" {
+  type        = string
+  default     = "0 8 * * *"
+  description = "Cron (in schedule_timezone) to scale the worker pool back to worker_min_replicas + resume the queue. Default 08:00. Allow lead time before demand for the node provision + GGUF reload (~a few min)."
+}
+
+variable "schedule_timezone" {
+  type        = string
+  default     = "Etc/UTC"
+  description = "IANA timezone for the scale up/down crons (e.g. \"Asia/Singapore\", \"America/New_York\"). Set to your users' local time so the idle window lines up."
+}

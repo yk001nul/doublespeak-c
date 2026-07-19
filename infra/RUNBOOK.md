@@ -121,3 +121,42 @@ gcloud run services delete doublespeak-frontend --region us-central1 --quiet
   next hardening step: **Cloud Armor** (external Application LB + serverless NEG)
   for real per-IP rate limiting and L7 DDoS Adaptive Protection — the proper
   public-facing defense, deferred until the go-public step.
+
+---
+
+## 4. Scheduled cost scaling (interim)
+
+Turns the expensive C2 worker pool **off overnight** to cut the dominant cost.
+Opt-in via Terraform `var.cost_schedule_enabled=true` (see `cost_schedule.tf`).
+A Cloud Run job (`doublespeak-worker-scaler`) runs a `gcloud` sequence; two Cloud
+Scheduler crons invoke it — `scale-down` (disable autoscaling → resize pool to 0
+→ pause the queue) and `scale-up` (resize to `worker_min_replicas` → re-enable
+autoscaling → resume the queue). During the down window the frontend still
+accepts jobs; they queue (paused) and drain after scale-up. The morning's first
+job pays a cold start (node provision + GGUF reload, a few min).
+
+**Enable:** `terraform apply ... -var cost_schedule_enabled=true -var schedule_timezone=<your TZ> -var scale_down_cron="0 0 * * *" -var scale_up_cron="0 8 * * *"` (plus the standing vars, incl. `image_frontend` — verify it's non-empty!).
+
+**Test by hand BEFORE trusting the schedule** — run the job directly and watch the pool:
+```bash
+gcloud run jobs execute doublespeak-worker-scaler --region us-central1 \
+  --update-env-vars ACTION=down --wait
+kubectl -n doublespeak get nodes            # expect the C2 node(s) to drain to 0
+gcloud tasks queues describe meteor-jobs --location us-central1 --format='value(state)'  # PAUSED
+
+gcloud run jobs execute doublespeak-worker-scaler --region us-central1 \
+  --update-env-vars ACTION=up --wait
+kubectl -n doublespeak get nodes            # C2 node returns; pod re-schedules + reloads model
+```
+
+**Manual override / kill the schedule:**
+```bash
+# Pause both crons (stops the automation without destroying it)
+gcloud scheduler jobs pause doublespeak-worker-scale-down --location us-central1
+gcloud scheduler jobs pause doublespeak-worker-scale-up   --location us-central1
+# Force back up right now (if scaled down and you need it):
+gcloud run jobs execute doublespeak-worker-scaler --region us-central1 --update-env-vars ACTION=up --wait
+```
+To remove entirely: `terraform apply ... -var cost_schedule_enabled=false` (tears down the scaler job, crons, and SAs). If you disable it while the pool is scaled **down**, run the `ACTION=up` execute (or a manual `gcloud container clusters resize ... --num-nodes 1` + re-enable autoscaling) first, or the pool stays at 0.
+
+**Caveats:** only worthwhile if the idle window is real — a job submitted during the window waits until scale-up (not ideal for global/bursty traffic). Confirm the actual usage pattern from the monitoring dashboard before committing to a window.

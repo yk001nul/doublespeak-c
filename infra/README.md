@@ -37,6 +37,8 @@ because any worker can pick up any job. Raising `num_threads` re-validates
 
 1. **Enable APIs**: cloudresourcemanager, iam, iamcredentials, run, cloudtasks,
    firestore, container, artifactregistry, secretmanager, monitoring, cloudbuild.
+   (Also `cloudscheduler.googleapis.com` if you enable the interim scheduled
+   cost-scaling — `var.cost_schedule_enabled`, see below.)
    (cloudresourcemanager + iam are required *before* the first apply — the
    `google_project_iam_member` resources read/modify the project IAM policy
    through Cloud Resource Manager; without it apply 403s after the GKE cluster
@@ -163,3 +165,21 @@ because any worker can pick up any job. Raising `num_threads` re-validates
   for per-IP rate limiting + L7 DDoS Adaptive Protection — the real public-facing
   defense, deferred to the go-public step.
 - The queue-depth HPA needs the Custom Metrics Stackdriver Adapter installed.
+
+## Cost optimization (interim)
+
+The GKE worker nodes are the dominant cost and sit idle most of the time. Two
+levers are in the repo:
+
+- **Single worker node** — the worker container's CPU *request* is 2 (limit 4),
+  low enough that GKE's system pods co-locate on one `c2-standard-4` instead of
+  forcing a second ~$150/mo node. Verify with `kubectl -n doublespeak get nodes`.
+- **Scheduled scale-down** — opt-in (`var.cost_schedule_enabled=true`): a Cloud
+  Run job + two Cloud Scheduler crons take the worker pool to 0 nodes overnight
+  and back in the morning, pausing the queue in between. See `cost_schedule.tf`
+  and `RUNBOOK.md` §4 (enable, hand-test, and manual-override steps). Only use it
+  if the traffic has a genuinely idle window.
+
+Bigger levers when you go public: **Spot/preemptible** C2 nodes (~60–70% off; the
+idempotent-retry job design already tolerates preemption) and Committed Use
+Discounts once traffic is predictable.
