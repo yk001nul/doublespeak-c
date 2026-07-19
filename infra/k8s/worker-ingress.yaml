@@ -1,20 +1,24 @@
-# External HTTP load balancer that lets Cloud Tasks reach the worker.
+# External HTTPS load balancer that lets Cloud Tasks reach the worker.
 #
-# Cloud Tasks only pushes to PUBLIC URLs, so the worker's /internal/run has to be
-# internet-reachable. This is an external L7 HTTP LB (gce Ingress class) on a
-# reserved static IP (Terraform google_compute_global_address "worker_ingress",
-# referenced here by name). Only /internal/run is routed; every other path falls
-# through to the default backend (404). The endpoint is unauthenticated at the
-# LB — the worker itself validates the Cloud Tasks OIDC token on every request
-# (WORKER_REQUIRE_OIDC in the ConfigMap), which is what keeps it safe.
-#
-# HTTP only for now (matches worker_url=http://<ip>). TLS needs a domain +
-# ManagedCertificate; add later without changing the OIDC path.
+# Cloud Tasks only pushes to PUBLIC URLs, and REFUSES to attach an OIDC token to
+# a plain-http target, so the worker's /internal/run is exposed over HTTPS on an
+# external L7 LB (gce Ingress class) at a reserved static IP (Terraform
+# google_compute_global_address "worker_ingress", referenced by name). TLS is a
+# Google-managed cert (worker-managed-cert.yaml) for the sslip.io host that
+# resolves to that IP; a FrontendConfig (worker-frontend-config.yaml) redirects
+# HTTP->HTTPS. Only /internal/run is routed; every other path 404s. The endpoint
+# is unauthenticated at the LB — the worker itself validates the Cloud Tasks OIDC
+# token on every request (WORKER_REQUIRE_OIDC in the ConfigMap), which is what
+# keeps it safe.
 #
 # The LB backend health check is derived from the pod's readiness probe
-# (/readyz on 8000), so no BackendConfig is needed. Provisioning the LB after
-# `kubectl apply` takes a few minutes; watch `kubectl -n doublespeak get ingress
-# doublespeak-worker -w` until ADDRESS shows the reserved IP and it serves 200.
+# (/readyz on 8000), so no BackendConfig is needed. After `kubectl apply`,
+# provisioning the LB takes a few minutes and the managed cert 15-60 min:
+#   kubectl -n doublespeak get ingress doublespeak-worker -w         # ADDRESS = reserved IP
+#   kubectl -n doublespeak get managedcertificate doublespeak-worker-cert -w   # STATUS Active
+# Don't flip WORKER_OIDC_SA back on the front-end (terraform apply with the
+# https worker_url) until the cert reads Active, or Cloud Tasks can't complete
+# the TLS handshake.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -25,9 +29,16 @@ metadata:
     # Reserved global static IP by name (Terraform creates it); keeps worker_url
     # stable across Ingress recreation.
     kubernetes.io/ingress.global-static-ip-name: "doublespeak-worker-ip"
+    # Google-managed TLS cert (worker-managed-cert.yaml) + HTTP->HTTPS redirect
+    # (worker-frontend-config.yaml).
+    networking.gke.io/managed-certificates: "doublespeak-worker-cert"
+    networking.gke.io/v1beta1.FrontendConfig: "doublespeak-worker-frontend-config"
 spec:
   rules:
-    - http:
+    # Host MUST match the managed cert domain + WORKER_OIDC_AUDIENCE
+    # (https://<this-host>). e.g. 35-201-65-159.sslip.io
+    - host: REPLACE_WORKER_HOST
+      http:
         paths:
           - path: /internal/run
             pathType: Prefix

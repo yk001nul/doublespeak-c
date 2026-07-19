@@ -29,7 +29,7 @@ output "tasks_invoker_service_account" {
 
 output "worker_ingress_ip" {
   value       = google_compute_global_address.worker_ingress.address
-  description = "Reserved static IP for the worker Ingress HTTP LB. Use http://<ip> as -var worker_url on the 3rd apply and as WORKER_OIDC_AUDIENCE in the worker ConfigMap."
+  description = "Reserved static IP for the worker Ingress LB. The worker host is the sslip.io name for this IP (e.g. 35.201.65.159 -> 35-201-65-159.sslip.io); use https://<host> as -var worker_url and as the ConfigMap WORKER_OIDC_AUDIENCE (must match the managed cert + Ingress host)."
 }
 
 output "frontend_url" {
