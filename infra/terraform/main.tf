@@ -162,6 +162,13 @@ resource "google_container_node_pool" "worker_pool" {
 
   node_config {
     machine_type = var.worker_machine_type # size vCPU to num_threads
+
+    # DETERMINISM: floor the CPU platform so every node the autoscaler creates
+    # runs the same ggml SIMD kernel / float reduction order. Without this a
+    # second node on a different host CPU desyncs encode/decode silently. Empty
+    # => null (unpinned; only safe for a permanently single-node pool).
+    min_cpu_platform = var.node_min_cpu_platform != "" ? var.node_min_cpu_platform : null
+
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
     labels       = local.labels
 
