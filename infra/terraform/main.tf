@@ -116,6 +116,22 @@ resource "google_storage_bucket_iam_member" "worker_gcs" {
   member = "serviceAccount:${google_service_account.worker.email}"
 }
 
+# Worker must re-enqueue an in-flight job when its node is preempted (Spot) or
+# drained (scheduled scale-down) mid-run — the ack-fast worker already returned
+# 200, so Cloud Tasks won't retry on its own. Same enqueue + act-as-invoker
+# grants the front-end has (see frontend_tasks / frontend_actas_invoker).
+resource "google_project_iam_member" "worker_tasks" {
+  project = var.project_id
+  role    = "roles/cloudtasks.enqueuer"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+}
+
+resource "google_service_account_iam_member" "worker_actas_invoker" {
+  service_account_id = google_service_account.tasks_invoker.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.worker.email}"
+}
+
 # ── Secret Manager: long-lived shared stego keys / API keys ──────────────────
 resource "google_secret_manager_secret" "api_keys" {
   secret_id = "doublespeak-api-keys"
@@ -165,9 +181,11 @@ resource "google_container_node_pool" "worker_pool" {
 
     # Spot VMs (~60-70% off) when var.worker_use_spot. Determinism-safe: same
     # machine_type + min_cpu_platform as on-demand, so float math is identical;
-    # only price/availability change. Preemption is tolerated by the idempotent
-    # Cloud Tasks re-drive. Default false => attribute stays false, no pool
-    # recreation on merge. Toggling it later recreates the pool (brief outage).
+    # only price/availability change. Preemption mid-run is recovered by the
+    # worker's SIGTERM re-enqueue (worker_app.recover_inflight) — NOT by an
+    # automatic Cloud Tasks retry, since the ack-fast worker already 200'd the
+    # push. Default false => attribute stays false, no pool recreation on merge.
+    # Toggling it later recreates the pool (brief outage).
     spot = var.worker_use_spot
 
     # DETERMINISM: floor the CPU platform so every node the autoscaler creates

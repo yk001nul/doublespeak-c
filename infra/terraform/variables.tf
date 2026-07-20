@@ -197,16 +197,20 @@ variable "worker_use_spot" {
     changes only price/availability, not float math.
 
     RELIABILITY trade-off: GCE can preempt a Spot node on ~30s notice. A job running
-    on a preempted node dies mid-flight, but the design already tolerates this — the
-    Cloud Tasks push is idempotently re-driven onto a replacement node (see the
-    interim-cost commit's "idempotent-retry job design"). Costs are: (a) the
-    preempted job restarts from scratch (adds its whole runtime again, minutes), and
-    (b) the replacement node cold-reloads the multi-GB --no-mmap GGUF before it can
-    serve. Also, Spot capacity is not guaranteed: under c2 Spot shortage the
-    autoscaler may be unable to get a node and jobs wait. Keep worker_min_replicas
-    >= 1 so at least one node is (best-effort) always warm. Prefer this once traffic
-    can absorb the occasional restart; keep it false if you need every job to finish
-    on its first attempt.
+    on a preempted node dies mid-flight. This is NOT auto-recovered by Cloud Tasks:
+    the ack-fast worker returns 200 before running the job in the background, so the
+    task is already gone from the queue and never retried. Recovery is explicit — on
+    SIGTERM the worker resets its in-flight job to queued and re-enqueues a fresh
+    push (worker_app.recover_inflight), so a replacement worker re-runs it (jobs are
+    deterministic => identical output). That path needs the worker's Cloud Tasks
+    enqueuer + act-as-invoker IAM and TASKS_QUEUE/WORKER_URL config (both added
+    alongside this var). Costs are still: (a) the preempted job restarts from scratch
+    (adds its whole runtime again, minutes), and (b) the replacement node cold-reloads
+    the multi-GB --no-mmap GGUF before it can serve. Also, Spot capacity is not
+    guaranteed: under c2 Spot shortage the autoscaler may be unable to get a node and
+    jobs wait. Keep worker_min_replicas >= 1 so at least one node is (best-effort)
+    always warm. Prefer this once traffic can absorb the occasional restart; keep it
+    false if you need every job to finish on its first attempt.
   EOT
 }
 

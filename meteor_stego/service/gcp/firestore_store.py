@@ -41,6 +41,11 @@ class FirestoreJobStore:
     def mark_running(self, job_id: str) -> None:
         self._doc(job_id).update({"status": RUNNING, "started_at": time.time()})
 
+    def mark_queued(self, job_id: str) -> None:
+        # Reset to queued so a re-enqueued push re-runs the job (worker shutdown
+        # recovery on preemption / scale-down). See jobs.InMemoryJobStore.
+        self._doc(job_id).update({"status": QUEUED, "started_at": None})
+
     def update_progress(self, job_id: str, *, step: int, bits_done: int,
                         total_bits: int, elapsed_s: float, eta_s: float | None) -> None:
         self._doc(job_id).update({

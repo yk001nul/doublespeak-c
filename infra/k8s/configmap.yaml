@@ -8,6 +8,13 @@ metadata:
   namespace: doublespeak
 data:
   GCP_PROJECT: "REPLACE_PROJECT_ID"
+  # Cloud Tasks queue the worker RE-ENQUEUES to when a node is preempted / scaled
+  # down mid-run (shutdown recovery). WORKER_URL is both the push target and the
+  # OIDC audience — MUST equal WORKER_OIDC_AUDIENCE below and the front-end's
+  # worker_url. TASKS_QUEUE/TASKS_LOCATION match the Terraform queue.
+  TASKS_QUEUE: "meteor-jobs"
+  TASKS_LOCATION: "us-central1"
+  WORKER_URL: "https://REPLACE_WORKER_HOST"
   GCS_BUCKET: "REPLACE_PROJECT_ID-doublespeak-assets"
   GCS_MODEL_OBJECT: "models/Phi-3.5-mini-instruct-Q4_K_M.gguf"
   METEOR_GGUF_PATH: "/models/model.gguf"

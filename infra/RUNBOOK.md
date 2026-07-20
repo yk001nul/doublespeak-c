@@ -163,7 +163,7 @@ To remove entirely: `terraform apply ... -var cost_schedule_enabled=false` (tear
 
 ## 5. Spot worker nodes (opt-in)
 
-Moves the C2 worker pool onto Spot VMs (~60–70% off). Opt-in via Terraform `var.worker_use_spot=true`. Determinism-safe (same `machine_type` + `node_min_cpu_platform` as on-demand → byte-identical float math); preemption is absorbed by the idempotent Cloud Tasks re-drive — a killed job restarts on a replacement node.
+Moves the C2 worker pool onto Spot VMs (~60–70% off). Opt-in via Terraform `var.worker_use_spot=true`. Determinism-safe (same `machine_type` + `node_min_cpu_platform` as on-demand → byte-identical float math). A preemption mid-run is recovered by the worker's **SIGTERM re-enqueue** (`worker_app.recover_inflight` resets the in-flight job to `queued` and re-pushes it), **not** by an automatic Cloud Tasks retry — the ack-fast worker already returned 200, so the task is gone from the queue. The re-run is deterministic (identical output). This needs the worker's Cloud Tasks enqueuer + act-as-invoker IAM and `TASKS_QUEUE`/`WORKER_URL` config, all added with the `worker_use_spot` var.
 
 **Enable / disable:**
 ```bash

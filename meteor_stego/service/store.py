@@ -25,6 +25,10 @@ class JobStore(Protocol):
     def mark_running(self, job_id: str) -> None:
         ...
 
+    def mark_queued(self, job_id: str) -> None:
+        """Reset a running job back to queued (worker shutdown recovery)."""
+        ...
+
     def update_progress(self, job_id: str, *, step: int, bits_done: int,
                         total_bits: int, elapsed_s: float, eta_s: float | None) -> None:
         ...
