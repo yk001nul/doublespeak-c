@@ -81,6 +81,16 @@ class InMemoryJobStore:
             job.status = RUNNING
             job.started_at = time.time()
 
+    def mark_queued(self, job_id: str) -> None:
+        # Reset a job back to queued so a re-enqueued Cloud Tasks push re-runs it
+        # (the /internal/run dedupe only proceeds on a queued job). Used by the
+        # worker's shutdown recovery when a node is preempted / scaled down
+        # mid-run — jobs are deterministic, so the re-run yields identical output.
+        with self._lock:
+            job = self._jobs[job_id]
+            job.status = QUEUED
+            job.started_at = None
+
     def update_progress(self, job_id: str, *, step: int, bits_done: int,
                         total_bits: int, elapsed_s: float, eta_s: float | None) -> None:
         with self._lock:

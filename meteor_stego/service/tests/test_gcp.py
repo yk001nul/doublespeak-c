@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from meteor_stego.service.jobs import InMemoryJobStore, QUEUED, RUNNING, DONE
 from meteor_stego.service.gcp.frontend_app import app as frontend_app
-from meteor_stego.service.gcp.worker_app import app as worker_app
+from meteor_stego.service.gcp.worker_app import app as worker_app, recover_inflight
 
 
 def _b64(data: bytes) -> str:
@@ -37,9 +37,11 @@ class FakeQueue:
     """Records enqueued (job_id, kind) instead of hitting Cloud Tasks."""
     def __init__(self):
         self.enqueued = []
+        self.dedupe_names = []
 
-    def enqueue(self, job_id, kind):
+    def enqueue(self, job_id, kind, *, dedupe_name=True):
         self.enqueued.append((job_id, kind))
+        self.dedupe_names.append(dedupe_name)
         return f"projects/fake/tasks/{job_id}"
 
 
@@ -99,6 +101,7 @@ def test_frontend_model_info(frontend):
 @pytest.fixture
 def worker():
     store = InMemoryJobStore()
+    queue = FakeQueue()
     ran = []
     done = threading.Event()
 
@@ -110,12 +113,15 @@ def worker():
     worker_app.state.store = store
     worker_app.state.run_job = fake_run_job
     worker_app.state.slot = threading.Lock()
+    worker_app.state.enqueue = queue.enqueue  # shutdown-recovery re-enqueue path
     with TestClient(worker_app) as c:
         yield c, store, ran, done
     worker_app.state.store = None
     worker_app.state.run_job = None
     worker_app.state.slot = None
     worker_app.state.verify_oidc = None
+    worker_app.state.enqueue = None
+    worker_app.state.inflight = None
 
 
 def _seed_job(store, kind="encode"):
@@ -167,6 +173,74 @@ def test_worker_single_slot_rejects_when_busy(worker):
         assert store.get(job.id).status == QUEUED  # untouched
     finally:
         worker_app.state.slot.release()
+
+
+def test_worker_releases_slot_on_already_handled(worker):
+    # Regression: an early-return path (redelivery / 404) must release the slot,
+    # or the worker wedges into permanent 429. A redelivered (already running)
+    # job must NOT leave the slot held.
+    client, store, ran, done = worker
+    handled = _seed_job(store)
+    store.mark_running(handled.id)
+    r = client.post("/internal/run", json={"job_id": handled.id, "kind": "encode"})
+    assert r.json()["status"] == "already_handled"
+    # Slot must be free: a fresh queued job still runs.
+    assert not worker_app.state.slot.locked()
+    fresh = _seed_job(store)
+    r2 = client.post("/internal/run", json={"job_id": fresh.id, "kind": "encode"})
+    assert r2.status_code == 200 and r2.json()["status"] == "running"
+    assert done.wait(5)
+
+
+def test_worker_releases_slot_on_404(worker):
+    client, store, ran, done = worker
+    r = client.post("/internal/run", json={"job_id": "ghost", "kind": "encode"})
+    assert r.status_code == 404
+    assert not worker_app.state.slot.locked()  # slot released, not leaked
+
+
+def test_worker_clears_inflight_after_completion(worker):
+    client, store, ran, done = worker
+    job = _seed_job(store)
+    client.post("/internal/run", json={"job_id": job.id, "kind": "encode"})
+    assert done.wait(5)
+    assert worker_app.state.inflight is None  # cleared in _work() finally
+
+
+# ── Shutdown recovery (SIGTERM re-enqueue) ───────────────────────────────────
+
+def test_recover_inflight_requeues_running_job():
+    store = InMemoryJobStore()
+    queue = FakeQueue()
+    job = store.create("encode", {"num_threads": 4}, payload=_encode_body())
+    store.mark_running(job.id)
+    inflight = {"job_id": job.id, "kind": "encode"}
+
+    assert recover_inflight(store, queue.enqueue, inflight) is True
+    # Reset to queued so the re-pushed task actually re-runs it...
+    assert store.get(job.id).status == QUEUED
+    # ...and re-enqueued WITHOUT the job_id dedupe name (original task already ran).
+    assert queue.enqueued == [(job.id, "encode")]
+    assert queue.dedupe_names == [False]
+
+
+def test_recover_inflight_skips_finished_job():
+    store = InMemoryJobStore()
+    queue = FakeQueue()
+    job = store.create("encode", {"num_threads": 4}, payload=_encode_body())
+    store.set_done(job.id, {"covertext": "x"})  # finished before the signal
+    inflight = {"job_id": job.id, "kind": "encode"}
+
+    assert recover_inflight(store, queue.enqueue, inflight) is False
+    assert store.get(job.id).status == DONE  # left untouched
+    assert queue.enqueued == []
+
+
+def test_recover_inflight_noop_when_idle():
+    store = InMemoryJobStore()
+    queue = FakeQueue()
+    assert recover_inflight(store, queue.enqueue, None) is False
+    assert queue.enqueued == []
 
 
 # ── Worker OIDC enforcement ──────────────────────────────────────────────────

@@ -65,4 +65,8 @@ ENV METEOR_LLM_URL=http://127.0.0.1:8080
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["sh", "-c", "uvicorn meteor_stego.service.gcp.worker_app:app --host 0.0.0.0 --port ${PORT}"]
+# `exec` so uvicorn REPLACES the shell as PID 1 and receives Kubernetes' SIGTERM
+# directly (without exec, `sh -c` stays PID 1 and does not forward the signal —
+# the worker's in-flight-job shutdown recovery would never fire). The shell form
+# is kept only to expand ${PORT}.
+CMD ["sh", "-c", "exec uvicorn meteor_stego.service.gcp.worker_app:app --host 0.0.0.0 --port ${PORT}"]
