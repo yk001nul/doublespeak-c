@@ -168,7 +168,7 @@ because any worker can pick up any job. Raising `num_threads` re-validates
 
 ## Cost optimization (interim)
 
-The GKE worker nodes are the dominant cost and sit idle most of the time. Two
+The GKE worker nodes are the dominant cost and sit idle most of the time. Three
 levers are in the repo:
 
 - **Single worker node** — the worker container's CPU *request* is 2 (limit 4),
@@ -179,7 +179,15 @@ levers are in the repo:
   and back in the morning, pausing the queue in between. See `cost_schedule.tf`
   and `RUNBOOK.md` §4 (enable, hand-test, and manual-override steps). Only use it
   if the traffic has a genuinely idle window.
+- **Spot worker nodes** — opt-in (`var.worker_use_spot=true`): runs the C2 pool on
+  Spot VMs (~60–70% off). Determinism-safe (same `machine_type` +
+  `node_min_cpu_platform`, so float math is byte-identical), and preemption is
+  absorbed by the idempotent Cloud Tasks re-drive. Cost: a preempted job restarts
+  and its replacement node cold-reloads the GGUF, and Spot capacity isn't
+  guaranteed. Toggling it recreates the node pool (brief worker outage) — do it in
+  a maintenance window. Best once traffic can absorb the occasional restart.
 
-Bigger levers when you go public: **Spot/preemptible** C2 nodes (~60–70% off; the
-idempotent-retry job design already tolerates preemption) and Committed Use
-Discounts once traffic is predictable.
+Composes with the two above: scale-down brings the pool back up as Spot nodes;
+the single-node CPU request is unchanged. The remaining lever when traffic is
+predictable is **Committed Use Discounts** (a billing-console purchase, not
+Terraform).

@@ -160,3 +160,17 @@ gcloud run jobs execute doublespeak-worker-scaler --region us-central1 --update-
 To remove entirely: `terraform apply ... -var cost_schedule_enabled=false` (tears down the scaler job, crons, and SAs). If you disable it while the pool is scaled **down**, run the `ACTION=up` execute (or a manual `gcloud container clusters resize ... --num-nodes 1` + re-enable autoscaling) first, or the pool stays at 0.
 
 **Caveats:** only worthwhile if the idle window is real — a job submitted during the window waits until scale-up (not ideal for global/bursty traffic). Confirm the actual usage pattern from the monitoring dashboard before committing to a window.
+
+## 5. Spot worker nodes (opt-in)
+
+Moves the C2 worker pool onto Spot VMs (~60–70% off). Opt-in via Terraform `var.worker_use_spot=true`. Determinism-safe (same `machine_type` + `node_min_cpu_platform` as on-demand → byte-identical float math); preemption is absorbed by the idempotent Cloud Tasks re-drive — a killed job restarts on a replacement node.
+
+**Enable / disable:**
+```bash
+terraform apply ... -var worker_use_spot=true    # move pool to Spot
+terraform apply ... -var worker_use_spot=false   # back to on-demand
+```
+
+**⚠️ Toggling recreates the node pool** (`spot` is a pool-level attribute) — expect a brief worker outage plus a GGUF cold-reload on the new nodes. Do it in a maintenance window; drain/pause the queue first if a job is mid-flight (§4 scale-down, or `kubectl -n doublespeak scale deployment doublespeak-worker --replicas=0`).
+
+**Caveats:** Spot capacity isn't guaranteed — under a c2 Spot shortage the autoscaler may fail to get a node and jobs wait. Each preemption costs a full job restart + GGUF reload, so only worthwhile once traffic tolerates the occasional retry. Watch the queue-backlog alert (§observability) after enabling. Composes with §4: scale-up brings the pool back as Spot nodes.
