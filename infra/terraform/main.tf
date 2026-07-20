@@ -163,6 +163,13 @@ resource "google_container_node_pool" "worker_pool" {
   node_config {
     machine_type = var.worker_machine_type # size vCPU to num_threads
 
+    # Spot VMs (~60-70% off) when var.worker_use_spot. Determinism-safe: same
+    # machine_type + min_cpu_platform as on-demand, so float math is identical;
+    # only price/availability change. Preemption is tolerated by the idempotent
+    # Cloud Tasks re-drive. Default false => attribute stays false, no pool
+    # recreation on merge. Toggling it later recreates the pool (brief outage).
+    spot = var.worker_use_spot
+
     # DETERMINISM: floor the CPU platform so every node the autoscaler creates
     # runs the same ggml SIMD kernel / float reduction order. Without this a
     # second node on a different host CPU desyncs encode/decode silently. Empty

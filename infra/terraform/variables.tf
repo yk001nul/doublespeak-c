@@ -179,6 +179,37 @@ variable "alert_queue_depth_threshold" {
   description = "Cloud Tasks meteor-jobs backlog depth above which the queue-backlog alert fires (flood, or stalled/insufficient workers)."
 }
 
+# ── Spot / preemptible worker nodes (opt-in) ─────────────────────────────────
+
+variable "worker_use_spot" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Run the worker node pool on Spot VMs (~60-70% cheaper than on-demand). Default
+    false so merging changes nothing; flip true on an apply to move the pool to
+    Spot. NOTE: toggling this recreates the node pool (Spot is a pool-level
+    attribute), so expect a brief worker outage + GGUF reload on the new nodes when
+    you change it — do it in a maintenance window.
+
+    DETERMINISM: safe. Spot nodes are the SAME machine_type (c2-standard-4) with the
+    SAME node_min_cpu_platform floor as on-demand, so ggml dispatches the identical
+    SIMD kernel and float reduction order — encode/decode stay byte-locked. Spot
+    changes only price/availability, not float math.
+
+    RELIABILITY trade-off: GCE can preempt a Spot node on ~30s notice. A job running
+    on a preempted node dies mid-flight, but the design already tolerates this — the
+    Cloud Tasks push is idempotently re-driven onto a replacement node (see the
+    interim-cost commit's "idempotent-retry job design"). Costs are: (a) the
+    preempted job restarts from scratch (adds its whole runtime again, minutes), and
+    (b) the replacement node cold-reloads the multi-GB --no-mmap GGUF before it can
+    serve. Also, Spot capacity is not guaranteed: under c2 Spot shortage the
+    autoscaler may be unable to get a node and jobs wait. Keep worker_min_replicas
+    >= 1 so at least one node is (best-effort) always warm. Prefer this once traffic
+    can absorb the occasional restart; keep it false if you need every job to finish
+    on its first attempt.
+  EOT
+}
+
 # ── Scheduled cost scaling (interim; opt-in) ─────────────────────────────────
 
 variable "cost_schedule_enabled" {
