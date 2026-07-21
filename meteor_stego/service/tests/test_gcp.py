@@ -13,8 +13,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from meteor_stego.service.jobs import InMemoryJobStore, QUEUED, RUNNING, DONE
+from meteor_stego.service.gcp.auth import Caller, hash_key
 from meteor_stego.service.gcp.frontend_app import app as frontend_app
 from meteor_stego.service.gcp.worker_app import app as worker_app, recover_inflight
+
+GOOD_KEY  = "dsk_live_good-test-key"
+OTHER_KEY = "dsk_live_other-test-key"
+AUTH      = {"Authorization": f"Bearer {GOOD_KEY}"}
 
 
 def _b64(data: bytes) -> str:
@@ -45,6 +50,31 @@ class FakeQueue:
         return f"projects/fake/tasks/{job_id}"
 
 
+class FakeApiKeyStore:
+    """Two known keys, no Firestore. Limits are per-Caller so a test can tighten
+    one key without touching global settings."""
+    def __init__(self):
+        self.records = {
+            hash_key(GOOD_KEY):  Caller(key_hash=hash_key(GOOD_KEY),  label="good"),
+            hash_key(OTHER_KEY): Caller(key_hash=hash_key(OTHER_KEY), label="other"),
+        }
+
+    def lookup(self, key_hash):
+        return self.records.get(key_hash)
+
+    def caller(self, raw_key) -> Caller:
+        return self.records[hash_key(raw_key)]
+
+
+class FakeUsage:
+    def __init__(self):
+        self.counts = {}
+
+    def increment(self, key_hash):
+        self.counts[key_hash] = self.counts.get(key_hash, 0) + 1
+        return self.counts[key_hash]
+
+
 # ── Front-end ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -53,11 +83,15 @@ def frontend():
     queue = FakeQueue()
     frontend_app.state.store = store
     frontend_app.state.queue = queue
-    with TestClient(frontend_app) as c:
+    frontend_app.state.api_keys = FakeApiKeyStore()
+    frontend_app.state.usage = FakeUsage()
+    with TestClient(frontend_app, headers=AUTH) as c:
         yield c, store, queue
     # reset injected state so tests stay independent
     frontend_app.state.store = None
     frontend_app.state.queue = None
+    frontend_app.state.api_keys = None
+    frontend_app.state.usage = None
 
 
 def test_frontend_submit_persists_and_enqueues(frontend):
@@ -73,6 +107,8 @@ def test_frontend_submit_persists_and_enqueues(frontend):
     assert job.kind == "encode"
     assert job.payload["message"] == "hi"
     assert job.payload["salt_b64"] == _b64(bytes(range(1, 33)))
+    # Attributed to the submitting key, which is what gates reads on it.
+    assert job.owner == hash_key(GOOD_KEY)
 
     # And a task was enqueued for it.
     assert queue.enqueued == [(job_id, "encode")]
@@ -94,6 +130,96 @@ def test_frontend_model_info(frontend):
     client, _, _ = frontend
     j = client.get("/v1/model-info").json()
     assert j["sampling"]["cache_prompt"] is False
+
+
+# ── Front-end auth ───────────────────────────────────────────────────────────
+
+def test_submit_without_key_401(frontend):
+    _, _, queue = frontend
+    bare = TestClient(frontend_app)          # no default Authorization header
+    r = bare.post("/v1/encode", json=_encode_body())
+    assert r.status_code == 401
+    assert queue.enqueued == []              # nothing reached the queue
+
+
+def test_submit_with_unknown_key_401(frontend):
+    client, _, queue = frontend
+    r = client.post("/v1/encode", json=_encode_body(),
+                    headers={"Authorization": "Bearer dsk_live_nonexistent"})
+    assert r.status_code == 401
+    assert queue.enqueued == []
+
+
+def test_disabled_key_401(frontend):
+    client, _, _ = frontend
+    frontend_app.state.api_keys.caller(GOOD_KEY).disabled = True
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 401
+
+
+def test_x_api_key_header_accepted(frontend):
+    _, _, _ = frontend
+    bare = TestClient(frontend_app)
+    r = bare.post("/v1/encode", json=_encode_body(),
+                  headers={"X-API-Key": GOOD_KEY})
+    assert r.status_code == 202
+
+
+def test_other_callers_job_is_404_not_403(frontend):
+    client, store, _ = frontend
+    job_id = client.post("/v1/encode", json=_encode_body()).json()["job_id"]
+    # The owner can read it...
+    assert client.get(f"/v1/jobs/{job_id}").status_code == 200
+    # ...but a different valid key must not learn that it exists at all.
+    r = client.get(f"/v1/jobs/{job_id}",
+                   headers={"Authorization": f"Bearer {OTHER_KEY}"})
+    assert r.status_code == 404
+
+
+# ── Front-end quota + admission control ──────────────────────────────────────
+
+def test_daily_quota_exhausted_429(frontend):
+    client, _, _ = frontend
+    caller = frontend_app.state.api_keys.caller(GOOD_KEY)
+    caller.quota_daily = 2
+    caller.max_concurrent = 0        # disable the concurrency gate for this test
+
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 202
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 202
+    r = client.post("/v1/encode", json=_encode_body())
+    assert r.status_code == 429
+    assert r.headers["Retry-After"]
+
+
+def test_concurrency_limit_429(frontend):
+    client, _, _ = frontend
+    # Free-tier default is one in-flight job; the first stays queued.
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 202
+    r = client.post("/v1/encode", json=_encode_body())
+    assert r.status_code == 429
+    assert "in flight" in r.json()["detail"]
+
+
+def test_admission_control_rejects_when_backlog_deep(frontend, monkeypatch):
+    from meteor_stego.service.gcp import settings as gcp_settings
+    client, store, queue = frontend
+    monkeypatch.setattr(gcp_settings, "ADMISSION_MAX_QUEUED", 1)
+    frontend_app.state.api_keys.caller(GOOD_KEY).max_concurrent = 0
+
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 202
+    r = client.post("/v1/encode", json=_encode_body())
+    assert r.status_code == 429
+    assert "capacity" in r.json()["detail"]
+    assert len(queue.enqueued) == 1
+
+
+def test_admission_rejection_does_not_burn_daily_quota(frontend, monkeypatch):
+    from meteor_stego.service.gcp import settings as gcp_settings
+    client, _, _ = frontend
+    monkeypatch.setattr(gcp_settings, "ADMISSION_MAX_QUEUED", 0)
+
+    assert client.post("/v1/encode", json=_encode_body()).status_code == 429
+    # The daily counter is the only gate that mutates, and it runs last.
+    assert frontend_app.state.usage.counts == {}
 
 
 # ── Worker ───────────────────────────────────────────────────────────────────
