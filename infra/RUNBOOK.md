@@ -46,9 +46,35 @@ to receive them; without it the policies still exist and show in the console.
 
 ## 2. Turn-down levers (fastest → most disruptive)
 
-The front-end is currently a **private** Cloud Run service (IAM-gated), so it is
-not publicly reachable and cannot be flooded by anonymous traffic today. The
-levers below matter most once it is made public.
+Whether the front-end is publicly reachable depends on `var.frontend_public`.
+While it is `false` the service is IAM-gated and cannot be flooded by anonymous
+traffic; once it is `true` the external Application LB is the front door and
+levers **0** and **C** below are the ones that shut it.
+
+In public mode there are two independent gates in front of the workers, and it
+is worth knowing which one to reach for: **Cloud Armor** bounds requests per
+source IP, while the **API key quota** bounds jobs per caller. A flood of cheap
+requests is an Armor problem; a caller burning real worker time is a quota
+problem, and you revoke their key instead.
+
+### 0. Slam the Cloud Armor default rule shut (public mode, fastest)
+
+The quickest way to close a public service. Takes effect within a minute or two
+and needs no redeploy, no Terraform, and no IAM change.
+
+```bash
+gcloud compute security-policies rules update 2147483647 \
+  --security-policy doublespeak-frontend-policy --action deny-403
+# restore:
+gcloud compute security-policies rules update 2147483647 \
+  --security-policy doublespeak-frontend-policy --action allow
+```
+
+To stay open for yourself while shutting out everyone else, set
+`var.armor_allowed_ips = ["<your ip>/32"]` and re-apply — that is the same
+staged-rollout state used before going public.
+
+> Raw `gcloud` changes here are Terraform drift; reconcile them afterwards.
 
 ### A. Pause the job queue — protect the expensive GKE tier (least disruptive)
 
@@ -75,16 +101,45 @@ gcloud run services update doublespeak-frontend --region us-central1 --max-insta
 > Note: a raw `gcloud` change is Terraform drift — reconcile `frontend_max_instances`
 > afterward, or the next `terraform apply` reverts it.
 
+### B2. Revoke or throttle one caller — surgical, no outage
+
+When the problem is a single API key rather than traffic volume, take that key
+out instead of closing the door on everyone. Revocation takes up to
+`API_KEY_CACHE_TTL_S` (60s) to propagate, because each Cloud Run instance caches
+key records.
+
+```bash
+export GCP_PROJECT=meteor-stego-1
+py -3 -m meteor_stego.service.gcp.manage_keys list
+py -3 -m meteor_stego.service.gcp.manage_keys disable <key-hash>
+```
+
+To find which key is responsible, the front-end logs `caller=<key-hash prefix>`
+on every accepted job:
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND textPayload:"accepted"' \
+  --limit 100 --format='value(textPayload)'
+```
+
+Tighten limits globally instead of per-key by lowering `var.free_tier_quota_daily`
+/ `var.admission_max_queued` and re-applying.
+
 ### C. Re-privatize the front-end — kill public access instantly
 
-Only relevant if the service was made public (an `allUsers` invoker binding was
-added for go-public). Removing it cuts off all anonymous traffic immediately;
-authenticated callers with `roles/run.invoker` still work.
+Removes the `allUsers` invoker binding, cutting off all anonymous traffic
+immediately; callers holding `roles/run.invoker` still work. Note that in public
+mode the Cloud Run ingress is also restricted to the load balancer, so lever 0
+is usually the faster and less disruptive choice.
 
 ```bash
 gcloud run services remove-iam-policy-binding doublespeak-frontend \
   --region us-central1 --member=allUsers --role=roles/run.invoker
 ```
+
+The durable version is `-var frontend_public=false` on the next apply, which
+reverts ingress to `INGRESS_TRAFFIC_ALL` and tears the load balancer down.
 
 ### D. Scale the workers to zero — stop all encode/decode compute
 

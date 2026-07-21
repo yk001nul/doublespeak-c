@@ -34,7 +34,17 @@ output "worker_ingress_ip" {
 
 output "frontend_url" {
   value       = length(google_cloud_run_v2_service.frontend) > 0 ? google_cloud_run_v2_service.frontend[0].uri : ""
-  description = "Public front-end URL (empty until image_frontend is set)."
+  description = "Cloud Run service URL (empty until image_frontend is set). NOTE: this attribute has historically been a stale alias that GFE-404s — derive the real one with `gcloud run services describe`. In public mode this URL stops answering anyway (ingress is restricted to the load balancer); use public_api_url instead."
+}
+
+output "frontend_ip" {
+  value       = one(google_compute_global_address.frontend[*].address)
+  description = "Reserved global IP of the public front-end load balancer (null unless frontend_public=true). Point a domain's A record here to move off the sslip.io host."
+}
+
+output "public_api_url" {
+  value       = local.frontend_lb > 0 ? "https://${local.frontend_host}" : ""
+  description = "The public API base URL. Empty unless frontend_public=true. The managed certificate takes 15-60 minutes to reach ACTIVE after the first apply — HTTPS fails until then."
 }
 
 output "dashboard_url" {

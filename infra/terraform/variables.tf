@@ -179,6 +179,130 @@ variable "alert_queue_depth_threshold" {
   description = "Cloud Tasks meteor-jobs backlog depth above which the queue-backlog alert fires (flood, or stalled/insufficient workers)."
 }
 
+variable "alert_401_rate_threshold" {
+  type        = number
+  default     = 1
+  description = "Front-end 401s/sec above which the auth-failure alert fires. Legitimate clients either hold a valid key or do not, so a sustained rate means someone is guessing keys."
+}
+
+variable "alert_429_rate_threshold" {
+  type        = number
+  default     = 1
+  description = "Front-end 429s/sec (sustained 10 min) above which the quota-rejection alert fires — demand has outgrown the single worker, or one caller is hammering a limit."
+}
+
+# ── Go public (opt-in) ───────────────────────────────────────────────────────
+
+variable "frontend_public" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Expose the front-end on the public internet. Default false so merging this
+    changes nothing. When true, Terraform creates an external Application Load
+    Balancer + Cloud Armor policy (frontend_lb.tf), grants allUsers the invoker
+    role, and pins the Cloud Run service's ingress to the load balancer so its
+    *.run.app URL stops answering directly.
+
+    Only flip this once the application-side API key enforcement is DEPLOYED
+    (REQUIRE_API_KEY, service/gcp/auth.py). The load balancer authenticates
+    nobody — it rate-limits anonymous traffic and nothing more.
+
+    Costs roughly $30/mo: ~$18-25 for the load balancer, ~$8-10 for Cloud Armor
+    Standard.
+  EOT
+}
+
+variable "frontend_domain" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Hostname for the front-end's Google-managed TLS certificate. Empty => derive
+    an sslip.io host from the reserved IP (e.g. 34-1-2-3.sslip.io), which needs
+    no owned domain — the same approach the worker Ingress uses.
+
+    To move to a real domain: register it, point an A record at the
+    frontend_ip output, set this variable, and re-apply. Nothing else changes.
+  EOT
+}
+
+variable "armor_allowed_ips" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Staged-rollout allowlist. While this is non-empty, the Cloud Armor policy
+    DENIES everything except these CIDR ranges, so the whole public stack can be
+    deployed and tested end to end before it is genuinely open. Set it to your
+    own address for the first apply, then empty it to open the service.
+  EOT
+}
+
+variable "armor_rate_limit_rpm" {
+  type        = number
+  default     = 120
+  description = <<-EOT
+    Per-IP requests per minute allowed by Cloud Armor before returning 429.
+    Keep this generous: a client polls /v1/jobs/{id} every few seconds for the
+    whole multi-minute life of a job, so a tight limit breaks normal use. Fair
+    sharing between callers is the API key quota's job, not this one.
+  EOT
+}
+
+variable "armor_waf_preview" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Attach the preconfigured SQLi/XSS WAF signatures in PREVIEW mode (they log
+    matches but never block). This API carries base64 key material and covertext
+    in JSON bodies, which trips those signatures on perfectly legitimate
+    requests — review the preview hits in Logging before ever promoting them to
+    enforcing.
+  EOT
+}
+
+variable "admission_max_queued" {
+  type        = number
+  default     = 10
+  description = <<-EOT
+    Refuse new jobs (429 + Retry-After) once this many are already queued. One
+    worker at ~4 minutes per job means 10 queued is already a ~40 minute wait —
+    past that a caller is better served by being told to come back than by
+    being handed a job id that sits for hours.
+  EOT
+}
+
+variable "free_tier_quota_daily" {
+  type        = number
+  default     = 5
+  description = <<-EOT
+    Jobs per UTC day per API key, unless the key's own record overrides it.
+    Total capacity is ~300 jobs/day, so 5/day supports roughly 60 active
+    callers.
+  EOT
+}
+
+variable "free_tier_max_concurrent" {
+  type        = number
+  default     = 1
+  description = "Jobs one API key may have queued or running at once, so a single caller cannot occupy the whole backlog."
+}
+
+variable "billing_account" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Billing account ID (e.g. "012345-678901") used to create a budget alert.
+    Empty => no budget is created. Strongly recommended before going public: the
+    budget is the backstop that tells you a public endpoint is costing money
+    faster than expected. Requires roles/billing.admin on the account.
+  EOT
+}
+
+variable "budget_amount_usd" {
+  type        = number
+  default     = 400
+  description = "Monthly budget in USD. Alerts fire at 50%, 90% and 100% of this."
+}
+
 # ── Spot / preemptible worker nodes (opt-in) ─────────────────────────────────
 
 variable "worker_use_spot" {

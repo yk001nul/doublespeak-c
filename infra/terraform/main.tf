@@ -231,6 +231,12 @@ resource "google_cloud_run_v2_service" "frontend" {
   location = var.region
   count    = var.image_frontend == "" ? 0 : 1
 
+  # Public mode routes every request through the external Application LB so the
+  # Cloud Armor policy cannot be bypassed by addressing *.run.app directly.
+  # Private mode leaves the door open at the network layer and relies on IAM
+  # (no allUsers binding), which is where this service started.
+  ingress = var.frontend_public ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
+
   template {
     service_account = google_service_account.frontend.email
 
@@ -283,6 +289,27 @@ resource "google_cloud_run_v2_service" "frontend" {
       env {
         name  = "WORKER_URL"
         value = var.worker_url
+      }
+
+      # ── Public-API enforcement (service/gcp/auth.py, quota.py) ───────────
+      # Always on, in both private and public mode: the app defaults it on
+      # anyway, and setting it explicitly means the posture is visible in the
+      # service definition rather than implied by a library default.
+      env {
+        name  = "REQUIRE_API_KEY"
+        value = "true"
+      }
+      env {
+        name  = "ADMISSION_MAX_QUEUED"
+        value = tostring(var.admission_max_queued)
+      }
+      env {
+        name  = "FREE_TIER_QUOTA_DAILY"
+        value = tostring(var.free_tier_quota_daily)
+      }
+      env {
+        name  = "FREE_TIER_MAX_CONCURRENT"
+        value = tostring(var.free_tier_max_concurrent)
       }
     }
   }
