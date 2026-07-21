@@ -44,6 +44,34 @@ resource "google_firestore_database" "jobs" {
   type        = "FIRESTORE_NATIVE"
 }
 
+# The per-caller concurrency gate (service/gcp/quota.py) counts a caller's
+# unfinished jobs with `owner == <key hash> AND status IN (queued, running)`.
+# Two filters on different fields need a composite index — without it Firestore
+# rejects the query with FAILED_PRECONDITION and every submit 500s. The other
+# quota query (status only) is served by the automatic single-field index.
+#
+# The collection name is shared by three places and is not a knob: it mirrors
+# FIRESTORE_COLLECTION in service/gcp/settings.py, which both the Cloud Run
+# front-end and the worker ConfigMap leave at its default.
+resource "google_firestore_index" "jobs_owner_status" {
+  project    = var.project_id
+  database   = google_firestore_database.jobs.name
+  collection = "meteor_jobs"
+
+  fields {
+    field_path = "owner"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "status"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "__name__"
+    order      = "ASCENDING"
+  }
+}
+
 # ── Cloud Tasks: dispatch queue to the single-slot workers ───────────────────
 resource "google_cloud_tasks_queue" "jobs" {
   name     = "meteor-jobs"
