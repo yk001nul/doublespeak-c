@@ -83,3 +83,16 @@ meteor_stego/out/build/*/llama_server.pid
 # Python
 __pycache__/
 *.pyc
+
+# Terraform
+# Provider plugins and the local state cache are machine-specific. *.tfvars is
+# ignored because it is where deployment-specific values (and eventually
+# secrets) accumulate — keep the standing var set local to each checkout rather
+# than committed. The lock file is deliberately NOT ignored: pinning provider
+# versions across machines is the point of it.
+infra/terraform/.terraform/
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+crash.log

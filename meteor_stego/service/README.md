@@ -91,8 +91,44 @@ Fast tests (validation, salt enforcement, 404s, model-info, job lifecycle) alway
 run. The end-to-end encode→decode round trip and the progress-advances test are
 skipped unless a `llama-server` is reachable.
 
+## Request ceilings
+
+Every request is bounded, because one encode costs roughly two minutes of
+exclusive worker CPU per message byte — an unbounded request is a denial of
+service against the whole service, not just its caller. The limits live in
+`config.py` and are enforced by `schemas.py`:
+
+| Field | Default limit | Env override |
+|---|---|---|
+| `message` / `message_b64` | 32 bytes | `METEOR_MAX_MESSAGE_BYTES` |
+| `max_steps` | 256 | `METEOR_MAX_STEPS_LIMIT` |
+| `llm_timeout_ms` | 60000 | `METEOR_MAX_LLM_TIMEOUT_MS` |
+| `starting_context` | 2000 chars | `METEOR_MAX_CONTEXT_CHARS` |
+| `covertext` | 20000 chars | `METEOR_MAX_COVERTEXT_CHARS` |
+
+## Auth and quota (GCP mode only)
+
+The local app in `app.py` has no authentication — it is a single-process dev
+mode. The Cloud Run front-end (`gcp/frontend_app.py`) requires an API key on
+every route and is the deployment that faces the internet:
+
+- **Keys** (`gcp/auth.py`) are bearer credentials sent as `Authorization: Bearer
+  dsk_live_…` or `X-API-Key`. Only the SHA-256 of a key is stored, as its
+  Firestore document id. `REQUIRE_API_KEY` defaults to **true** — forgetting an
+  env var must not be what leaves the service open. Mint keys with
+  `python -m meteor_stego.service.gcp.manage_keys create --label …`.
+- **Jobs are owned.** `GET /v1/jobs/{id}` returns 404, not 403, for a job
+  belonging to a different key, so it cannot be used to probe which ids exist.
+- **Three quota gates** (`gcp/quota.py`) run per submit, cheapest first and
+  reads before writes, so a request rejected for capacity does not burn the
+  caller's daily allowance: global backlog admission control, per-key
+  concurrency, then per-key daily quota. All answer 429 with `Retry-After`.
+- The caller's key material is dropped from the job document once the job
+  reaches a terminal status.
+
 ## Not in this phase
 
-Autoscaling, Cloud Tasks, Firestore, Cloud Run split, auth/quota, webhooks, and
-GCS model pull are Phase 2+ (`SERVICE_ARCHITECTURE.md`). This MVP keeps everything
-in one process to validate the async model first.
+Autoscaling, Cloud Tasks, Firestore, and the Cloud Run split are Phase 2+
+(`SERVICE_ARCHITECTURE.md`). This MVP keeps everything in one process to
+validate the async model first. Webhooks (`callback_url`) and self-serve key
+signup are still outstanding.

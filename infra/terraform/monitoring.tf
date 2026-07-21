@@ -97,6 +97,112 @@ resource "google_monitoring_alert_policy" "queue_backlog" {
   notification_channels = google_monitoring_notification_channel.email[*].id
 }
 
+# ── Alert: auth failures (someone guessing API keys) ─────────────────────────
+# A public endpoint attracts credential-stuffing. Legitimate traffic produces
+# almost no 401s — a client either holds a working key or it does not — so a
+# sustained rate of them is someone probing, not users fumbling.
+resource "google_monitoring_alert_policy" "frontend_401" {
+  display_name = "doublespeak: API key auth failures"
+  combiner     = "OR"
+  documentation {
+    content = "Front-end 401s above ${var.alert_401_rate_threshold}/s — likely API key guessing. Check the LB logs for the source IPs and, if it is one range, add a Cloud Armor deny rule (see infra/RUNBOOK.md). Individual keys can be revoked with manage_keys disable."
+  }
+
+  conditions {
+    display_name = "front-end 401/sec > ${var.alert_401_rate_threshold}"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"doublespeak-frontend\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.labels.response_code = \"401\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.alert_401_rate_threshold
+      duration        = "300s"
+      trigger { count = 1 }
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = google_monitoring_notification_channel.email[*].id
+}
+
+# ── Alert: sustained 429s (demand exceeds what one worker can serve) ─────────
+# Unlike the others this is not necessarily an attack — it is the signal that
+# real demand has outgrown the single-worker capacity, i.e. the moment to decide
+# between raising quotas, adding a worker, or leaving callers throttled.
+resource "google_monitoring_alert_policy" "frontend_429" {
+  display_name = "doublespeak: sustained quota rejections"
+  combiner     = "OR"
+  documentation {
+    content = "Front-end 429s above ${var.alert_429_rate_threshold}/s for 10 minutes. Either demand genuinely exceeds the single worker's ~300 jobs/day (consider worker capacity or per-key quota), or one caller is hammering a limit. Break it down by caller with the accepted-job log lines (caller=<key prefix>)."
+  }
+
+  conditions {
+    display_name = "front-end 429/sec > ${var.alert_429_rate_threshold}"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"doublespeak-frontend\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.labels.response_code = \"429\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.alert_429_rate_threshold
+      duration        = "600s"
+      trigger { count = 1 }
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = google_monitoring_notification_channel.email[*].id
+}
+
+# ── Budget alert ─────────────────────────────────────────────────────────────
+# The backstop. Every other control here bounds a rate; this one bounds the
+# actual bill, which is the number that ultimately matters when an endpoint is
+# open to the internet. Opt-in because it needs roles/billing.admin on the
+# billing account, which the rest of this config does not.
+resource "google_billing_budget" "monthly" {
+  count           = var.billing_account == "" ? 0 : 1
+  billing_account = var.billing_account
+  display_name    = "doublespeak monthly budget"
+
+  budget_filter {
+    projects = ["projects/${var.project_id}"]
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = tostring(var.budget_amount_usd)
+    }
+  }
+
+  # 50% and 90% are warnings; 100% means act. Forecasted spend fires early
+  # enough to still do something about it.
+  threshold_rules {
+    threshold_percent = 0.5
+  }
+  threshold_rules {
+    threshold_percent = 0.9
+  }
+  threshold_rules {
+    threshold_percent = 1.0
+  }
+  threshold_rules {
+    threshold_percent = 1.0
+    spend_basis       = "FORECASTED_SPEND"
+  }
+
+  dynamic "all_updates_rule" {
+    for_each = var.alert_email == "" ? [] : [1]
+    content {
+      monitoring_notification_channels = google_monitoring_notification_channel.email[*].id
+      disable_default_iam_recipients   = false
+    }
+  }
+}
+
 # ── Dashboard: front door at a glance ────────────────────────────────────────
 resource "google_monitoring_dashboard" "frontdoor" {
   dashboard_json = jsonencode({

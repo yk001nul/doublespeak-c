@@ -131,6 +131,54 @@ def test_style_out_of_range(client):
     assert r.status_code == 422
 
 
+# ── Request ceilings (public-API abuse control) ──────────────────────────────
+# Each of these bounds how long one request can occupy the single worker.
+
+def test_oversized_message_rejected(client):
+    big = "x" * (config.MAX_MESSAGE_BYTES + 1)
+    assert client.post("/v1/encode",
+                       json=_valid_encode_body(message=big)).status_code == 422
+
+
+def test_oversized_message_b64_rejected(client):
+    body = _valid_encode_body(
+        message_b64=_b64(b"x" * (config.MAX_MESSAGE_BYTES + 1)))
+    del body["message"]
+    assert client.post("/v1/encode", json=body).status_code == 422
+
+
+def test_message_at_limit_accepted(client):
+    body = _valid_encode_body(message="x" * config.MAX_MESSAGE_BYTES)
+    assert client.post("/v1/encode", json=body).status_code == 202
+
+
+def test_max_steps_above_ceiling_rejected(client):
+    r = client.post("/v1/encode",
+                    json=_valid_encode_body(max_steps=config.MAX_STEPS_LIMIT + 1))
+    assert r.status_code == 422
+
+
+def test_llm_timeout_above_ceiling_rejected(client):
+    r = client.post("/v1/encode",
+                    json=_valid_encode_body(
+                        llm_timeout_ms=config.MAX_LLM_TIMEOUT_MS + 1))
+    assert r.status_code == 422
+
+
+def test_oversized_starting_context_rejected(client):
+    r = client.post("/v1/encode",
+                    json=_valid_encode_body(
+                        starting_context="c" * (config.MAX_CONTEXT_CHARS + 1)))
+    assert r.status_code == 422
+
+
+def test_oversized_covertext_rejected(client):
+    body = _valid_encode_body()
+    del body["message"]
+    body["covertext"] = "c" * (config.MAX_COVERTEXT_CHARS + 1)
+    assert client.post("/v1/decode", json=body).status_code == 422
+
+
 def test_encode_accepts_and_queues(client):
     """Submission returns 202 + job_id and the job is retrievable. Without a
     server the job will eventually fail at inference, but acceptance + the job

@@ -14,12 +14,22 @@ from .jobs import Job, InMemoryJobStore  # noqa: F401  (re-exported for callers)
 
 @runtime_checkable
 class JobStore(Protocol):
-    def create(self, kind: str, model_info: dict, payload: dict | None = None) -> Job:
-        """Create a queued job (optionally persisting the request payload) and
-        return it."""
+    def create(self, kind: str, model_info: dict, payload: dict | None = None,
+               owner: str | None = None) -> Job:
+        """Create a queued job (optionally persisting the request payload and the
+        SHA-256 hex of the API key that owns it) and return it."""
         ...
 
     def get(self, job_id: str) -> Job | None:
+        ...
+
+    def count_active_for_owner(self, owner: str) -> int:
+        """Jobs this owner currently has queued or running (per-caller
+        concurrency gate; see gcp.quota)."""
+        ...
+
+    def count_queued(self) -> int:
+        """Global queued-job count, for admission control."""
         ...
 
     def mark_running(self, job_id: str) -> None:

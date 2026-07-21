@@ -44,6 +44,34 @@ resource "google_firestore_database" "jobs" {
   type        = "FIRESTORE_NATIVE"
 }
 
+# The per-caller concurrency gate (service/gcp/quota.py) counts a caller's
+# unfinished jobs with `owner == <key hash> AND status IN (queued, running)`.
+# Two filters on different fields need a composite index — without it Firestore
+# rejects the query with FAILED_PRECONDITION and every submit 500s. The other
+# quota query (status only) is served by the automatic single-field index.
+#
+# The collection name is shared by three places and is not a knob: it mirrors
+# FIRESTORE_COLLECTION in service/gcp/settings.py, which both the Cloud Run
+# front-end and the worker ConfigMap leave at its default.
+resource "google_firestore_index" "jobs_owner_status" {
+  project    = var.project_id
+  database   = google_firestore_database.jobs.name
+  collection = "meteor_jobs"
+
+  fields {
+    field_path = "owner"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "status"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "__name__"
+    order      = "ASCENDING"
+  }
+}
+
 # ── Cloud Tasks: dispatch queue to the single-slot workers ───────────────────
 resource "google_cloud_tasks_queue" "jobs" {
   name     = "meteor-jobs"
@@ -231,6 +259,12 @@ resource "google_cloud_run_v2_service" "frontend" {
   location = var.region
   count    = var.image_frontend == "" ? 0 : 1
 
+  # Public mode routes every request through the external Application LB so the
+  # Cloud Armor policy cannot be bypassed by addressing *.run.app directly.
+  # Private mode leaves the door open at the network layer and relies on IAM
+  # (no allUsers binding), which is where this service started.
+  ingress = var.frontend_public ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
+
   template {
     service_account = google_service_account.frontend.email
 
@@ -283,6 +317,27 @@ resource "google_cloud_run_v2_service" "frontend" {
       env {
         name  = "WORKER_URL"
         value = var.worker_url
+      }
+
+      # ── Public-API enforcement (service/gcp/auth.py, quota.py) ───────────
+      # Always on, in both private and public mode: the app defaults it on
+      # anyway, and setting it explicitly means the posture is visible in the
+      # service definition rather than implied by a library default.
+      env {
+        name  = "REQUIRE_API_KEY"
+        value = "true"
+      }
+      env {
+        name  = "ADMISSION_MAX_QUEUED"
+        value = tostring(var.admission_max_queued)
+      }
+      env {
+        name  = "FREE_TIER_QUOTA_DAILY"
+        value = tostring(var.free_tier_quota_daily)
+      }
+      env {
+        name  = "FREE_TIER_MAX_CONCURRENT"
+        value = tostring(var.free_tier_max_concurrent)
       }
     }
   }

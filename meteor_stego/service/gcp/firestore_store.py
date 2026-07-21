@@ -24,10 +24,11 @@ class FirestoreJobStore:
     def _doc(self, job_id: str):
         return self._col.document(job_id)
 
-    def create(self, kind: str, model_info: dict, payload: dict | None = None) -> Job:
+    def create(self, kind: str, model_info: dict, payload: dict | None = None,
+               owner: str | None = None) -> Job:
         import uuid
         job = Job(id=uuid.uuid4().hex, kind=kind, status=QUEUED,
-                  model_info=model_info, payload=payload)
+                  model_info=model_info, payload=payload, owner=owner)
         # asdict-friendly document; Progress is nested.
         self._doc(job.id).set(job.to_dict())
         return job
@@ -37,6 +38,23 @@ class FirestoreJobStore:
         if not snap.exists:
             return None
         return _job_from_dict(snap.to_dict())
+
+    def _count(self, *filters) -> int:
+        # Firestore aggregation query: the count runs server-side, so this bills
+        # as a handful of reads no matter how many documents match.
+        from google.cloud.firestore_v1.base_query import FieldFilter  # lazy
+        query = self._col
+        for field, op, value in filters:
+            query = query.where(filter=FieldFilter(field, op, value))
+        result = query.count().get()
+        return int(result[0][0].value)
+
+    def count_active_for_owner(self, owner: str) -> int:
+        return self._count(("owner", "==", owner),
+                           ("status", "in", [QUEUED, RUNNING]))
+
+    def count_queued(self) -> int:
+        return self._count(("status", "==", QUEUED))
 
     def mark_running(self, job_id: str) -> None:
         self._doc(job_id).update({"status": RUNNING, "started_at": time.time()})
@@ -66,11 +84,16 @@ class FirestoreJobStore:
             result = {k: v for k, v in result.items() if k != "covertext"}
             result["covertext_gcs_uri"] = uri
         self._doc(job_id).update({
-            "status": DONE, "result": result, "finished_at": time.time()})
+            "status": DONE, "result": result, "finished_at": time.time(),
+            "payload": None})
 
     def set_failed(self, job_id: str, error: str) -> None:
+        # payload holds the caller's key material and salt in cleartext; it is
+        # only needed while the job can still be (re-)run, so a terminal status
+        # is where it gets dropped. See jobs.InMemoryJobStore.set_failed.
         self._doc(job_id).update({
-            "status": FAILED, "error": error, "finished_at": time.time()})
+            "status": FAILED, "error": error, "finished_at": time.time(),
+            "payload": None})
 
 
 def _job_from_dict(d: dict) -> Job:
@@ -78,6 +101,7 @@ def _job_from_dict(d: dict) -> Job:
     return Job(
         id=d["id"], kind=d["kind"], status=d["status"],
         model_info=d.get("model_info") or {}, payload=d.get("payload"),
+        owner=d.get("owner"),
         progress=Progress(**{k: prog.get(k) for k in
                              ("step", "bits_done", "total_bits", "elapsed_s", "eta_s")
                              if k in prog}),

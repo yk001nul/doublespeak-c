@@ -159,12 +159,67 @@ because any worker can pick up any job. Raising `num_threads` re-validates
   backlog → `var.alert_email`), and a Cloud Run `max_instance_count` cap
   (`var.frontend_max_instances`). Emergency turn-down levers (pause queue,
   re-privatize, scale workers to 0) are documented in `infra/RUNBOOK.md`.
-- Front-end auth/quota via API Gateway; webhooks (`callback_url`); per-identity
-  Secret Manager stego keys.
-- **Cloud Armor** (external Application LB + serverless NEG in front of Cloud Run)
-  for per-IP rate limiting + L7 DDoS Adaptive Protection — the real public-facing
-  defense, deferred to the go-public step.
+- ~~Front-end auth/quota.~~ **Done** — API keys, per-key quota and admission
+  control are enforced in the application (`service/gcp/auth.py`, `quota.py`),
+  not API Gateway. See "Going public" below.
+- ~~Cloud Armor.~~ **Done** — `terraform/frontend_lb.tf`, opt-in via
+  `var.frontend_public`. See "Going public" below.
+- Self-serve key issuance (Firebase Auth → mint a key per Google account).
+  Until then keys are minted by an operator with
+  `python -m meteor_stego.service.gcp.manage_keys create`.
+- Webhooks (`callback_url`); per-identity Secret Manager stego keys.
 - The queue-depth HPA needs the Custom Metrics Stackdriver Adapter installed.
+
+## Going public
+
+Opt-in via `var.frontend_public` (default false — merging changes nothing).
+When enabled, `frontend_lb.tf` creates a global external Application Load
+Balancer with a Google-managed certificate and a Cloud Armor policy in front of
+the Cloud Run front-end, and pins the service's ingress to
+`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` so its `*.run.app` URL stops answering
+and Armor cannot be bypassed. Budget roughly **$30/mo** (LB ~$18-25, Cloud Armor
+Standard ~$8-10).
+
+**The load balancer authenticates nobody.** Authentication is an API key checked
+by the application on every route; Cloud Armor only absorbs anonymous floods
+before they reach billable Cloud Run instances. Deploy a front-end image
+containing the auth layer *before* flipping the flag.
+
+Why this shape rather than API Gateway: the limits that matter here are per-job,
+not per-request. One job is ~4 minutes of exclusive C2 worker time, so the
+service needs a daily job quota, a per-caller concurrency cap and a global
+backlog gate — none of which a request-rate gateway expresses. Those live in
+`service/gcp/quota.py` and share the Firestore that already holds jobs.
+
+### Order of operations
+
+1. **Deploy the auth layer first.** Build and roll out a front-end image with
+   `service/gcp/auth.py`; `REQUIRE_API_KEY` is set to `true` on the service in
+   both modes, so this must be live before anything else.
+2. **Mint yourself a key** — `GCP_PROJECT=… python -m
+   meteor_stego.service.gcp.manage_keys create --label ops`. Printed once only.
+3. **Apply with the door still shut**: `-var frontend_public=true
+   -var 'armor_allowed_ips=["<your.ip>/32"]'`. Everything is built, but Cloud
+   Armor denies all but your address.
+4. **Wait for the certificate.** `gcloud compute ssl-certificates describe
+   doublespeak-frontend-cert --global --format='value(managed.status)'` must
+   read `ACTIVE` — 15-60 minutes. HTTPS fails until it does.
+5. **Verify through the LB** at the `public_api_url` output: a request with no
+   key gets 401, a valid key round-trips an encode, another key's job id gets
+   404, and an oversized request gets 422.
+6. **Open it** by re-applying with `armor_allowed_ips` back to `[]`.
+
+To use a real domain instead of the default sslip.io host, point an A record at
+the `frontend_ip` output, set `var.frontend_domain`, and re-apply.
+
+### Guardrails worth setting at the same time
+
+- `-var billing_account=012345-678901` creates a budget alert — the only control
+  that bounds the actual bill rather than a rate. Needs `roles/billing.admin`.
+- `-var alert_email=…` attaches a notification channel; without it the alert
+  policies exist but page nobody.
+- Emergency levers are in `RUNBOOK.md` §2 — lever 0 (slam the Cloud Armor
+  default rule shut) is the fastest way to close a public service.
 
 ## Cost optimization (interim)
 

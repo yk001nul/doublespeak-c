@@ -5,20 +5,24 @@ Does no inference: it validates a request, writes a `queued` job to Firestore
 (persisting the request payload so the worker can reconstruct it), enqueues a
 Cloud Task, and reads Firestore for status. Scales to zero.
 
-Testability: `store` and `queue` live in `app.state`. The lifespan creates the
-real Firestore/Cloud Tasks clients only if they were not already injected, so
-unit tests can set `app.state.store` / `app.state.queue` to fakes and drive the
-routes with TestClient without any google-cloud library installed.
+Testability: `store`, `queue`, `api_keys` and `usage` live in `app.state`. The
+lifespan creates the real Firestore/Cloud Tasks clients only if they were not
+already injected, so unit tests can set them to fakes and drive the routes with
+TestClient without any google-cloud library installed.
+
+Authentication is per-API-key (`auth.require_api_key`) and every submit passes
+through `quota.enforce`. A job is readable only by the key that created it.
 """
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .. import config
 from ..schemas import DecodeRequest, EncodeRequest, JobAccepted, JobStatus, Progress
-from . import settings
+from . import quota, settings
+from .auth import Caller, require_api_key
 
 log = logging.getLogger("meteor.service.frontend")
 
@@ -35,34 +39,49 @@ async def lifespan(app: FastAPI):
         app.state.queue = CloudTasksQueue()
         log.info("front-end up; project=%s queue=%s worker=%s",
                  settings.GCP_PROJECT, settings.TASKS_QUEUE, settings.WORKER_URL)
+    if settings.REQUIRE_API_KEY and not getattr(app.state, "api_keys", None):
+        from .auth import FirestoreApiKeyStore
+        app.state.api_keys = FirestoreApiKeyStore()
+        app.state.usage = quota.FirestoreUsageCounter()
+        log.info("api key auth ON; quota=%d/day concurrency=%d admission=%d queued",
+                 settings.FREE_TIER_QUOTA_DAILY, settings.FREE_TIER_MAX_CONCURRENT,
+                 settings.ADMISSION_MAX_QUEUED)
     yield
 
 
 app = FastAPI(title="doublespeak stego front-end", version="0.2.0", lifespan=lifespan)
 
 
-async def _submit(request: Request, kind: str, req) -> JobAccepted:
+async def _submit(request: Request, kind: str, req, caller: Caller) -> JobAccepted:
     store = request.app.state.store
     queue = request.app.state.queue
-    job = store.create(kind, config.model_info(), payload=req.model_dump(mode="json"))
+    quota.enforce(caller, store, request.app.state.usage)
+    job = store.create(kind, config.model_info(),
+                       payload=req.model_dump(mode="json"), owner=caller.key_hash)
     queue.enqueue(job.id, kind)
+    log.info("accepted %s job=%s caller=%s", kind, job.id, caller.short)
     return JobAccepted(job_id=job.id, status=job.status)
 
 
 @app.post("/v1/encode", status_code=202, response_model=JobAccepted)
-async def submit_encode(req: EncodeRequest, request: Request):
-    return await _submit(request, "encode", req)
+async def submit_encode(req: EncodeRequest, request: Request,
+                        caller: Caller = Depends(require_api_key)):
+    return await _submit(request, "encode", req, caller)
 
 
 @app.post("/v1/decode", status_code=202, response_model=JobAccepted)
-async def submit_decode(req: DecodeRequest, request: Request):
-    return await _submit(request, "decode", req)
+async def submit_decode(req: DecodeRequest, request: Request,
+                        caller: Caller = Depends(require_api_key)):
+    return await _submit(request, "decode", req, caller)
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobStatus)
-async def get_job(job_id: str, request: Request):
+async def get_job(job_id: str, request: Request,
+                  caller: Caller = Depends(require_api_key)):
     job = request.app.state.store.get(job_id)
-    if job is None:
+    # Someone else's job is reported as absent, not forbidden — a 403 would
+    # confirm the job id exists, which is itself worth hiding.
+    if job is None or (job.owner is not None and job.owner != caller.key_hash):
         raise HTTPException(status_code=404, detail="job not found")
     p = job.progress
     return JobStatus(

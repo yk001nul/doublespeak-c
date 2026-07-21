@@ -41,6 +41,10 @@ class Job:
     # processes) can reconstruct it. Unused by the in-process local mode, which
     # closes over the request directly.
     payload: dict | None = None
+    # SHA-256 hex of the API key that submitted this job. Jobs are only readable
+    # by their owner (see frontend_app.get_job); None means "no auth layer in
+    # play", which is the local single-process mode.
+    owner: str | None = None
     progress: Progress = field(default_factory=Progress)
     result: dict | None = None
     error: str | None = None
@@ -64,9 +68,10 @@ class InMemoryJobStore:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def create(self, kind: str, model_info: dict, payload: dict | None = None) -> Job:
+    def create(self, kind: str, model_info: dict, payload: dict | None = None,
+               owner: str | None = None) -> Job:
         job = Job(id=uuid.uuid4().hex, kind=kind, status=QUEUED,
-                  model_info=model_info, payload=payload)
+                  model_info=model_info, payload=payload, owner=owner)
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -74,6 +79,17 @@ class InMemoryJobStore:
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def count_active_for_owner(self, owner: str) -> int:
+        """How many jobs this owner has queued or running (concurrency gate)."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values()
+                       if j.owner == owner and j.status in (QUEUED, RUNNING))
+
+    def count_queued(self) -> int:
+        """Global backlog depth, for admission control."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j.status == QUEUED)
 
     def mark_running(self, job_id: str) -> None:
         with self._lock:
@@ -106,6 +122,7 @@ class InMemoryJobStore:
             job = self._jobs[job_id]
             job.status = DONE
             job.result = result
+            job.payload = None   # drops the caller's key material — see set_failed
             job.finished_at = time.time()
 
     def set_failed(self, job_id: str, error: str) -> None:
@@ -113,6 +130,11 @@ class InMemoryJobStore:
             job = self._jobs[job_id]
             job.status = FAILED
             job.error = error
+            # The payload holds the caller's key material and salt in cleartext.
+            # It is only needed while the job can still be (re-)run, so a terminal
+            # status is the point to drop it. Nothing reads payload after this:
+            # worker_app dispatches from it only for queued/running jobs.
+            job.payload = None
             job.finished_at = time.time()
 
 

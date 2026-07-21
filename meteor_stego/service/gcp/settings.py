@@ -47,6 +47,29 @@ REQUIRE_OIDC = _opt("WORKER_REQUIRE_OIDC", "false").lower() in ("1", "true", "ye
 # (e.g. http://<worker-lb-ip>). Set in the worker ConfigMap.
 WORKER_OIDC_AUDIENCE = _opt("WORKER_OIDC_AUDIENCE", "")
 
+# ── Public API: authentication, quota, admission control ─────────────────────
+# The front-end is the public door to a backend that costs real money per job,
+# so REQUIRE_API_KEY defaults to TRUE — forgetting to set it must not be the
+# thing that leaves the service open. Turn it off explicitly for local runs.
+REQUIRE_API_KEY     = _opt("REQUIRE_API_KEY", "true").lower() in ("1", "true", "yes")
+API_KEYS_COLLECTION = _opt("API_KEYS_COLLECTION", "api_keys")
+USAGE_COLLECTION    = _opt("USAGE_COLLECTION", "api_key_usage")
+# How long a key record is cached in-process. This is also the window in which a
+# revoked key keeps working, so keep it short.
+API_KEY_CACHE_TTL_S = float(_opt("API_KEY_CACHE_TTL_S", "60"))
+
+# Default limits applied to a key record that does not override them.
+FREE_TIER_QUOTA_DAILY    = int(_opt("FREE_TIER_QUOTA_DAILY", "5"))
+FREE_TIER_MAX_CONCURRENT = int(_opt("FREE_TIER_MAX_CONCURRENT", "1"))
+
+# Admission control: refuse new work once the backlog reaches this depth. At
+# roughly four minutes per job on a single worker, 10 queued jobs is already a
+# ~40 minute wait — past that, a 429 is more useful to the caller than a job id.
+ADMISSION_MAX_QUEUED     = int(_opt("ADMISSION_MAX_QUEUED", "10"))
+ADMISSION_RETRY_AFTER_S  = int(_opt("ADMISSION_RETRY_AFTER_S", "600"))
+CONCURRENCY_RETRY_AFTER_S = int(_opt("CONCURRENCY_RETRY_AFTER_S", "300"))
+QUOTA_RETRY_AFTER_S      = int(_opt("QUOTA_RETRY_AFTER_S", "3600"))
+
 # GCS — pinned model + large payloads
 GCS_BUCKET        = _req("GCS_BUCKET")
 GCS_MODEL_OBJECT  = _opt("GCS_MODEL_OBJECT", "models/Phi-3.5-mini-instruct-Q4_K_M.gguf")

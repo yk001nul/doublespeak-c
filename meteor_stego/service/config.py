@@ -53,6 +53,20 @@ DEFAULT_LLM_TIMEOUT_MS = 30000
 REQUIRED_SALT_LEN = 32
 
 
+# ── Request ceilings (public-API abuse control) ──────────────────────────────
+# The worker is single-slot and a job costs roughly two minutes of C2 CPU per
+# message byte, so an unbounded request is a denial of service against the whole
+# service, not just the caller. Every one of these is an upper bound on how long
+# one request can occupy the only worker. Raise them per-tier later if needed;
+# they are read by schemas.py, so a change here is a change to the public API.
+
+MAX_MESSAGE_BYTES  = int(_env("METEOR_MAX_MESSAGE_BYTES", "32"))    # ≈1h of worker time
+MAX_STEPS_LIMIT    = int(_env("METEOR_MAX_STEPS_LIMIT", str(DEFAULT_MAX_STEPS)))
+MAX_LLM_TIMEOUT_MS = int(_env("METEOR_MAX_LLM_TIMEOUT_MS", "60000"))
+MAX_CONTEXT_CHARS  = int(_env("METEOR_MAX_CONTEXT_CHARS", "2000"))
+MAX_COVERTEXT_CHARS = int(_env("METEOR_MAX_COVERTEXT_CHARS", "20000"))
+
+
 @functools.lru_cache(maxsize=1)
 def gguf_sha256() -> str:
     """Resolve the model SHA-256 for the served contract.

@@ -26,7 +26,8 @@ def _decode_b64(value: str, field: str) -> bytes:
 class _KeyedRequest(BaseModel):
     """Fields shared by encode and decode: the shared secret and topic."""
 
-    starting_context: str = Field(..., min_length=1)
+    starting_context: str = Field(..., min_length=1,
+                                  max_length=config.MAX_CONTEXT_CHARS)
     style: int = Field(default=1, ge=0, le=4,
                        description="MeteorStyle: 1=chat 2=email 3=blog 4=news; 0=legacy")
     key_material_b64: str = Field(
@@ -71,13 +72,22 @@ class EncodeRequest(_KeyedRequest):
     message_b64: str | None = Field(default=None, description="base64 message bytes to encode.")
     beta: int = Field(default=config.DEFAULT_BETA, ge=2, le=5)
     num_candidates: int = Field(default=config.DEFAULT_NUM_CANDIDATES, ge=4, le=8)
-    max_steps: int = Field(default=config.DEFAULT_MAX_STEPS, ge=1)
-    llm_timeout_ms: int = Field(default=config.DEFAULT_LLM_TIMEOUT_MS, ge=1000)
+    max_steps: int = Field(default=config.DEFAULT_MAX_STEPS, ge=1,
+                           le=config.MAX_STEPS_LIMIT)
+    llm_timeout_ms: int = Field(default=config.DEFAULT_LLM_TIMEOUT_MS, ge=1000,
+                                le=config.MAX_LLM_TIMEOUT_MS)
 
     @model_validator(mode="after")
     def _check_message(self):
         if (self.message is None) == (self.message_b64 is None):
             raise ValueError("supply exactly one of message or message_b64")
+        # Encode time scales with the message length (~2 min of worker CPU per
+        # byte), so this cap is what stops one request monopolising the single
+        # worker. Measured on the decoded bytes, not the encoded string.
+        n = len(self.message_bytes())
+        if n > config.MAX_MESSAGE_BYTES:
+            raise ValueError(
+                f"message must be at most {config.MAX_MESSAGE_BYTES} bytes, got {n}")
         return self
 
     def message_bytes(self) -> bytes:
@@ -87,11 +97,14 @@ class EncodeRequest(_KeyedRequest):
 
 
 class DecodeRequest(_KeyedRequest):
-    covertext: str = Field(..., min_length=1)
+    covertext: str = Field(..., min_length=1,
+                           max_length=config.MAX_COVERTEXT_CHARS)
     beta: int = Field(default=config.DEFAULT_BETA, ge=2, le=5)
     num_candidates: int = Field(default=config.DEFAULT_NUM_CANDIDATES, ge=4, le=8)
-    max_steps: int = Field(default=config.DEFAULT_MAX_STEPS, ge=1)
-    llm_timeout_ms: int = Field(default=config.DEFAULT_LLM_TIMEOUT_MS, ge=1000)
+    max_steps: int = Field(default=config.DEFAULT_MAX_STEPS, ge=1,
+                           le=config.MAX_STEPS_LIMIT)
+    llm_timeout_ms: int = Field(default=config.DEFAULT_LLM_TIMEOUT_MS, ge=1000,
+                                le=config.MAX_LLM_TIMEOUT_MS)
 
 
 class JobAccepted(BaseModel):
