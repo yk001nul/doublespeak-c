@@ -60,7 +60,14 @@ PROTOCOL_VERSION = 1
 DEFAULT_BETA           = 3
 DEFAULT_NUM_CANDIDATES = 8    # beta=3 → 8 candidates fills all slots exactly
 DEFAULT_MAX_STEPS      = 256
-DEFAULT_LLM_TIMEOUT_MS = 30000
+
+# A grammar-constrained /completion on the deployed worker (Phi-3.5-mini Q4_K_M,
+# c2-standard-4, METEOR_NUM_THREADS=4) measured at ~57s: 8 steps in 454.94s.
+# The old 30s budget was overshot by roughly 2x on EVERY call, which used to
+# degrade silently to a static phrase table and now fails the job outright — so
+# this is a safety net for a hung server, not a scheduling knob, and it needs
+# real headroom above the measured latency rather than a value close to it.
+DEFAULT_LLM_TIMEOUT_MS = 90000
 
 # Per-request salt is mandatory for a network service (the zero-salt CLI
 # shortcut is explicitly rejected — see SERVICE_ARCHITECTURE.md "Security
@@ -75,9 +82,12 @@ REQUIRED_SALT_LEN = 32
 # one request can occupy the only worker. Raise them per-tier later if needed;
 # they are read by schemas.py, so a change here is a change to the public API.
 
-MAX_MESSAGE_BYTES  = int(_env("METEOR_MAX_MESSAGE_BYTES", "32"))    # ≈1h of worker time
+# At beta=3 a byte costs ~2.7 steps and a step measures ~57s on the deployed
+# worker, so the 32-byte ceiling is ~85 steps ≈ 80 min of exclusive worker time
+# for a single request. This is the main cost dial.
+MAX_MESSAGE_BYTES  = int(_env("METEOR_MAX_MESSAGE_BYTES", "32"))
 MAX_STEPS_LIMIT    = int(_env("METEOR_MAX_STEPS_LIMIT", str(DEFAULT_MAX_STEPS)))
-MAX_LLM_TIMEOUT_MS = int(_env("METEOR_MAX_LLM_TIMEOUT_MS", "60000"))
+MAX_LLM_TIMEOUT_MS = int(_env("METEOR_MAX_LLM_TIMEOUT_MS", "180000"))
 MAX_CONTEXT_CHARS  = int(_env("METEOR_MAX_CONTEXT_CHARS", "2000"))
 MAX_COVERTEXT_CHARS = int(_env("METEOR_MAX_COVERTEXT_CHARS", "20000"))
 
