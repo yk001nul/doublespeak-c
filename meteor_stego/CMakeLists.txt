@@ -250,7 +250,7 @@ target_link_libraries(doublespeak PRIVATE meteor)
 
 enable_testing()
 
-set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode capacity)
+set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode capacity llm_failure)
 
 # Internal source files needed by tests
 set(INTERNAL_SOURCES
@@ -265,7 +265,7 @@ set(INTERNAL_SOURCES
 )
 
 foreach(test ${ALL_TESTS})
-    if(test MATCHES "roundtrip|determinism|styled_encode|capacity")
+    if(test MATCHES "roundtrip|determinism|styled_encode|capacity|llm_failure")
         # These tests use the public meteor API, don't compile internal sources
         add_executable(test_${test} tests/test_${test}.c)
     else()
@@ -288,8 +288,9 @@ foreach(test ${ALL_TESTS})
         target_link_libraries(test_${test} PRIVATE m)
     endif()
 
-    # Link roundtrip, determinism, styled_encode and capacity tests against the meteor library
-    if(test MATCHES "roundtrip|determinism|styled_encode|capacity")
+    # Link roundtrip, determinism, styled_encode, capacity and llm_failure
+    # tests against the meteor library
+    if(test MATCHES "roundtrip|determinism|styled_encode|capacity|llm_failure")
         add_dependencies(test_${test} meteor)
         target_link_libraries(test_${test} PRIVATE meteor)
     endif()

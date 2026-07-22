@@ -970,28 +970,20 @@ static char* parse_llm_plain_answer(const char* raw_json)
     return out;
 }
 
-/* Deterministic local fallback (no server round-trip) used if the /completion
-   call fails or returns something unparseable, so both encode.c and decode.c
-   still get byte-identical text to paraphrase in stage 2. */
-static const char* DIGRESSION_FALLBACK_ANSWER =
-    "it has changed in a small but noticeable way";
-
-static char* dup_digression_fallback(void)
-{
-    size_t n = strlen(DIGRESSION_FALLBACK_ANSWER) + 1;
-    char*  fb = (char*)malloc(n);
-    if (fb) memcpy(fb, DIGRESSION_FALLBACK_ANSWER, n);
-    return fb;
-}
-
 /* Stage 1 of a digression: asks DIGRESSION_QUESTION[axis][variant] as a
    plain, non-bit-embedding /completion call (no grammar — free text) and
-   returns the answer (caller frees). Never returns NULL except on OOM —
-   HTTP/parse failures fall back to a fixed deterministic string so encode
-   and decode stay in lockstep even if the server hiccups. The returned
-   text is meant to be fed into llm_client_build_preamble() and then the
-   normal phrase-distribution/beta-bit machinery (stage 2), exactly like
-   the main topic — see meteor_core.h's DigressionAxis doc comment. */
+   returns the answer (caller frees). Returns NULL on OOM or on any HTTP /
+   parse failure; the caller maps that to METEOR_ERR_LLM.
+
+   This call carries no message bits, so a fixed fallback string here would
+   have kept encode and decode in lockstep. It was still removed: substituting
+   a canned sentence silently narrows every digression in the covertext to the
+   same text, which is the same detectability problem as the phrase-table
+   fallback, just quieter. One rule — a failed call is an error — beats two.
+
+   The returned text is meant to be fed into llm_client_build_preamble() and
+   then the normal phrase-distribution/beta-bit machinery (stage 2), exactly
+   like the main topic — see meteor_core.h's DigressionAxis doc comment. */
 char* llm_client_get_digression_answer(LLMClient* client, const char* full_context,
                                         DigressionAxis axis, int variant)
 {
@@ -1015,11 +1007,11 @@ char* llm_client_get_digression_answer(LLMClient* client, const char* full_conte
 
     char* raw = HTTP_POST(client, "/completion", body);
     free(body);
-    if (!raw) return dup_digression_fallback();
+    if (!raw) return NULL;
 
     char* answer = parse_llm_plain_answer(raw);
     free(raw);
-    return answer ? answer : dup_digression_fallback();
+    return answer;
 }
 
 static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
@@ -1043,7 +1035,8 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
        flat 1024 was undersized here and silently truncated the trailing
        "Return ONLY a JSON object..." format example via snprintf, which
        correlated with a spike in the model failing to return parseable
-       JSON (falling back to the hardcoded FALLBACK_PHRASES table). */
+       JSON. That used to degrade to a static phrase table; it now surfaces
+       as METEOR_ERR_LLM, so a regression here fails loudly instead. */
     size_t buf_size = pre_len + ctx_len + bl_len + bw_len + sa_len + 2048;
     char*  buf      = (char*)malloc(buf_size);
     if (!buf) return NULL;
@@ -1135,71 +1128,20 @@ static char* build_phrase_prompt(const char* preamble, const char* ctx, int n,
     return buf;
 }
 
-static const char* FALLBACK_SYLLABLES[] = {
-    "the", "in", "a", "re", "pro", "con", "de", "ex", "un", "be",
-    "per", "dis", "over", "out", "sub", "pre", "inter", "mis", "non", "bi"
-};
-#define FALLBACK_SYLLABLES_COUNT 20
-
-static const char* FALLBACK_WORDS[] = {
-    "the", "is", "a", "and", "of", "it", "to", "in", "that", "have",
-    "for", "on", "are", "with", "as", "at", "be", "this", "was", "but"
-};
-#define FALLBACK_WORDS_COUNT 20
-
-static const char* FALLBACK_PHRASES[] = {
-    "and the world",   "in the morning",  "at the office",  "on the street",
-    "to the market",   "by the river",    "with the team",  "from the start",
-    "for the cause",   "of the year",     "under the sky",  "over the hill",
-    "into the night",  "through the day", "around the town", "before the dawn",
-    "after the rain",  "among the trees", "beside the road", "along the way"
-};
-#define FALLBACK_PHRASES_COUNT 20
-
-static LLMResponse* uniform_phrase_fallback(int n)
-{
-    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
-    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
-    resp->count       = n;
-    float p = 1.0f / (float)n;
-    for (int i = 0; i < n; i++) {
-        strncpy(resp->candidates[i].text,
-                FALLBACK_PHRASES[i % FALLBACK_PHRASES_COUNT], 63);
-        resp->candidates[i].text[63] = '\0';
-        resp->candidates[i].prob = p;
-    }
-    return resp;
-}
-
-static LLMResponse* uniform_word_fallback(int n)
-{
-    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
-    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
-    resp->count       = n;
-    float p = 1.0f / (float)n;
-    for (int i = 0; i < n; i++) {
-        strncpy(resp->candidates[i].text,
-                FALLBACK_WORDS[i % FALLBACK_WORDS_COUNT], 63);
-        resp->candidates[i].text[63] = '\0';
-        resp->candidates[i].prob = p;
-    }
-    return resp;
-}
-
-static LLMResponse* uniform_fallback(int n)
-{
-    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
-    resp->candidates  = (LLMCandidate*)calloc((size_t)n, sizeof(LLMCandidate));
-    resp->count       = n;
-    float p = 1.0f / (float)n;
-    for (int i = 0; i < n; i++) {
-        strncpy(resp->candidates[i].text,
-                FALLBACK_SYLLABLES[i % FALLBACK_SYLLABLES_COUNT], 63);
-        resp->candidates[i].text[63] = '\0';
-        resp->candidates[i].prob = p;
-    }
-    return resp;
-}
+/* There are deliberately NO local fallback distributions here.
+ *
+ * There used to be three (FALLBACK_SYLLABLES / FALLBACK_WORDS / FALLBACK_PHRASES,
+ * 20 entries each, served uniformly) so that a server hiccup could not abort a
+ * long run. Because both sides substituted the same table deterministically the
+ * PRNG stayed in lockstep and the round-trip still succeeded — which meant a
+ * total LLM outage presented as SUCCESS, with covertext built from a 20-phrase
+ * vocabulary. That is trivially machine-detectable, so it destroys the only
+ * property this library exists to provide, and every test still passed.
+ *
+ * A failed call must therefore surface. Each entry point returns NULL, which the
+ * callers already map to METEOR_ERR_LLM. Losing a long run to a transient error
+ * is strictly better than emitting covertext that looks like output from a
+ * fixed phrase list. */
 
 /* ── public API ─────────────────────────────────────────────────────────── */
 
@@ -1230,14 +1172,14 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     char* raw = HTTP_POST(client, "/completion", body);
     free(body);
 
-    if (!raw) return uniform_fallback(client->max_candidates);
+    if (!raw) return NULL;
 
     LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
     free(raw);
 
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
-        return uniform_fallback(client->max_candidates);
+        return NULL;
     }
     return resp;
 }
@@ -1267,14 +1209,14 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     char* raw = HTTP_POST(client, "/completion", body);
     free(body);
 
-    if (!raw) return uniform_word_fallback(client->max_candidates);
+    if (!raw) return NULL;
 
     LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
     free(raw);
 
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
-        return uniform_word_fallback(client->max_candidates);
+        return NULL;
     }
     return resp;
 }
@@ -1327,14 +1269,14 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
     char* raw = HTTP_POST(client, "/completion", body);
     free(body);
 
-    if (!raw) return uniform_phrase_fallback(client->max_candidates);
+    if (!raw) return NULL;
 
     LLMResponse* resp = parse_llm_response(raw, client->max_candidates);
     free(raw);
 
     if (!resp || resp->count == 0) {
         llm_response_free(resp);
-        return uniform_phrase_fallback(client->max_candidates);
+        return NULL;
     }
     return resp;
 }
