@@ -17,6 +17,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .. import config
@@ -50,6 +51,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="doublespeak stego front-end", version="0.2.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    """Say what was wrong without echoing the request back.
+
+    FastAPI's default handler reports the offending value in `input`, and for a
+    body-level validator that value is the *whole* body — which here carries
+    `key_material_b64` and `salt_b64`, the caller's shared secret. Validation
+    errors are the responses most likely to be pasted into a bug report or a
+    chat log, so the payload is dropped entirely and only the location and
+    reason are returned. `ctx` goes with it: for model-level validators it
+    holds the original exception object.
+
+    This mirrors, on the request path, the same rule the storage path already
+    follows by dropping key material from a job at terminal status.
+    """
+    detail = [{"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")}
+              for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 async def _submit(request: Request, kind: str, req, caller: Caller) -> JobAccepted:

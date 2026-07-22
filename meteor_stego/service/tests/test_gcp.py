@@ -121,6 +121,26 @@ def test_frontend_validation_still_enforced(frontend):
     assert r.status_code == 422
 
 
+def test_validation_error_does_not_echo_key_material(frontend):
+    """A 422 must not reflect the caller's secret back in the response body.
+
+    Both error shapes are checked: a body-level validator (whose `input` is the
+    entire request, key material included) and a field-level one.
+    """
+    client, _, _ = frontend
+    secret, salt = _b64(b"shared-secret"), _b64(bytes(range(1, 33)))
+
+    for body in (_encode_body(salt_b64=_b64(bytes(32))),   # model validator
+                 _encode_body(max_steps=10**6)):           # field validator
+        r = client.post("/v1/encode", json=body)
+        assert r.status_code == 422
+        assert secret not in r.text and salt not in r.text
+        # The reason still has to reach the caller, or the 422 is useless.
+        err = r.json()["detail"][0]
+        assert err["msg"] and err["loc"]
+        assert "input" not in err and "ctx" not in err
+
+
 def test_frontend_unknown_job_404(frontend):
     client, _, _ = frontend
     assert client.get("/v1/jobs/nope").status_code == 404
