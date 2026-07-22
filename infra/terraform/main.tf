@@ -72,6 +72,24 @@ resource "google_firestore_index" "jobs_owner_status" {
   }
 }
 
+# The per-caller daily quota (service/gcp/quota.py) writes one document per
+# (key, day) and stamps each with `expires_at` = its day + 2, on the assumption
+# that Firestore expires them for us — quota.py's own docstring says buckets
+# "age out under the collection's TTL policy rather than needing a reset job".
+# Nothing was enforcing that: the field was written but no TTL policy existed,
+# so every bucket ever created was being kept forever. This is that policy.
+#
+# Deleting a bucket only discards history — the live gate reads *today's* doc,
+# which is never near expiry, so expiry can never hand a caller extra quota.
+resource "google_firestore_field" "usage_ttl" {
+  project    = var.project_id
+  database   = google_firestore_database.jobs.name
+  collection = "api_key_usage"
+  field      = "expires_at"
+
+  ttl_config {}
+}
+
 # ── Cloud Tasks: dispatch queue to the single-slot workers ───────────────────
 resource "google_cloud_tasks_queue" "jobs" {
   name     = "meteor-jobs"
