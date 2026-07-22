@@ -69,12 +69,17 @@ def test_model_info_contract(client):
     r = client.get("/v1/model-info")
     assert r.status_code == 200
     j = r.json()
-    for key in ("gguf_sha256", "llama_cpp_tag", "num_threads", "sampling"):
+    for key in ("protocol_version", "gguf_sha256", "llama_cpp_tag",
+                "num_threads", "sampling"):
         assert key in j
     assert j["num_threads"] == config.NUM_THREADS
     # Determinism-critical sampling must be published.
     assert j["sampling"]["temp"] == 0.0
     assert j["sampling"]["cache_prompt"] is False
+    # The grammars/prompts that shape the candidate distributions are not
+    # identifiable from any of the above, so a build that changes them must be
+    # distinguishable from one that does not. See config.PROTOCOL_VERSION.
+    assert j["protocol_version"] == config.PROTOCOL_VERSION
 
 
 def test_unknown_job_404(client):

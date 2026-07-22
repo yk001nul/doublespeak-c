@@ -40,6 +40,21 @@ SAMPLING = {
 }
 
 
+# ── Protocol version ─────────────────────────────────────────────────────────
+# Covertext is only decodable by a build that reproduces the encoder's candidate
+# distributions exactly. The rest of the determinism contract (model SHA, llama
+# tag, threads, sampling) pins the *inference* side, but the distributions also
+# depend on this repo's GBNF grammars and prompt text — and nothing published
+# identified those, so two mutually incompatible builds advertised identical
+# contracts and a grammar change broke existing covertext silently.
+#
+# BUMP THIS whenever a change alters what the model is asked or what it may
+# answer: the grammars or prompt builders in src/llm_client.c, the per-step PRNG
+# draw order, beta/candidate-count semantics, or the style/digression machinery.
+# Do NOT bump for changes that leave the distributions identical — timeouts, CPU
+# or node sizing, HTTP transport, error handling, logging.
+PROTOCOL_VERSION = 1
+
 # ── Library defaults (match the CLI / test-suite defaults) ───────────────────
 
 DEFAULT_BETA           = 3
@@ -90,6 +105,7 @@ def model_info() -> dict:
     """The served determinism contract, returned by GET /v1/model-info and
     embedded in every job document."""
     return {
+        "protocol_version": PROTOCOL_VERSION,
         "gguf_sha256":   gguf_sha256(),
         "llama_cpp_tag": LLAMA_CPP_TAG,
         "num_threads":   NUM_THREADS,
