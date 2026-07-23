@@ -215,7 +215,8 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
             if (is_opening && sentence_is_digression) {
                 digress_answer = llm_client_get_digression_answer(
                     ctx->llm, full_recon, sentence_axis, sentence_variant);
-                if (!digress_answer) { *out_error = METEOR_ERR_OOM; done = 1; break; }
+                /* NULL is now an LLM failure as well as OOM — mirrors encode.c. */
+                if (!digress_answer) { *out_error = METEOR_ERR_LLM; done = 1; break; }
                 digress_preamble = llm_client_build_preamble((int)ctx->style, digress_answer);
                 if (!digress_preamble) { free(digress_answer); *out_error = METEOR_ERR_OOM; done = 1; break; }
             }
@@ -414,10 +415,15 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
 
             if (done) break;
 
-            /* synthesise EOW step */
+            /* synthesise EOW step. This step consumes a PRNG draw, so skipping
+               it desyncs the stream against the encoder for the rest of the
+               message — silently. It used to be safe to ignore a NULL here only
+               because the client always returned a fallback distribution; now
+               that a failed call really returns NULL, it has to be an error. */
             LLMResponse* eow_resp = llm_client_get_syllable_dist(
                 ctx->llm, preamble, full_recon, partial, 0);
-            if (eow_resp) {
+            if (!eow_resp) { *out_error = METEOR_ERR_LLM; done = 1; break; }
+            {
                 const char** et = (const char**)malloc(
                     (size_t)eow_resp->count * sizeof(char*));
                 float* ep = (float*)malloc(
@@ -461,6 +467,17 @@ uint8_t* meteor_decode_impl(struct MeteorCtx* ctx,
     prng_wipe(&prng);
     free(full_recon);
     free(preamble);
+
+    /* Same rule as encode: an error means no result. Bits recovered before the
+       failure are a prefix of the message at best and desynced garbage at
+       worst, and the ctypes binding raises on the error code (meteor.py:301)
+       before it would ever call meteor_free, so returning a buffer here only
+       leaked it. */
+    if (*out_error != METEOR_OK) {
+        free(recovered_bits);
+        *out_msg_len = 0;
+        return NULL;
+    }
 
     size_t   msg_len;
     uint8_t* msg = bits_to_bytes(recovered_bits, rb_count, &msg_len);

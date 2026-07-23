@@ -76,8 +76,11 @@ def enforce(caller, store, usage) -> None:
     `store` supplies the two counts (see store.JobStore); `usage` is the daily
     counter. Returns None when the request may proceed.
     """
-    # 1. Global backlog. Each queued job is ~4 minutes of worker time, so the
-    #    threshold doubles as the worst-case wait we are willing to promise.
+    # 1. Global backlog. A short-message job is ~7.5 minutes of worker time
+    #    (measured: ~57s per step), so the threshold doubles as the worst-case
+    #    wait we are willing to promise — currently ADMISSION_MAX_QUEUED × that.
+    #    A long message near MAX_MESSAGE_BYTES is far worse, so treat the
+    #    threshold as a floor on the promise, not a bound.
     queued = store.count_queued()
     if queued >= settings.ADMISSION_MAX_QUEUED:
         log.warning("admission rejected: backlog=%d caller=%s", queued, caller.short)

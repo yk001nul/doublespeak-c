@@ -299,6 +299,9 @@ class Meteor:
             ctypes.byref(msg_len), ctypes.byref(err)
         )
         _raise_for_code(err.value, "meteor_decode")
+        if not ptr:
+            raise MeteorError("meteor_decode returned NULL without error code",
+                              METEOR_ERR_OOM)
         out = bytes(ptr[:msg_len.value])
         _lib.meteor_free(ptr)
         return out

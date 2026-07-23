@@ -49,8 +49,10 @@ const char* llm_client_style_seed(int style);
  * partial_word   : syllables built for the current word so far (empty if is_new_word)
  * is_new_word    : 1 = first syllable of a new word, 0 = continuation / EOW step
  *
- * Returns NULL on unrecoverable failure (caller treats it as METEOR_ERR_LLM).
- * On soft failure (bad JSON), returns a uniform distribution over num_candidates slots.
+ * Returns NULL on ANY failure — unreachable server, timeout, unparseable or
+ * empty JSON — which the caller treats as METEOR_ERR_LLM. There is deliberately
+ * no local fallback distribution: see the note above the public API section in
+ * llm_client.c.
  * Caller frees with llm_response_free().
  */
 LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
@@ -64,7 +66,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
  * Used in embellishment (style) mode instead of syllable-level sampling.
  * preamble: style/topic prefix from llm_client_build_preamble(), or NULL.
  * full_context: generated text so far.
- * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ * Returns NULL on any failure (caller treats it as METEOR_ERR_LLM).
  */
 /*
  * blacklist_word: word chosen in the previous step; the LLM is asked not to
@@ -107,7 +109,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
  * llm_client_get_digression_answer() below) in place of the main preamble
  * for that one call, so it takes the exact same code path as a normal
  * topic-anchored opening.
- * Returns NULL on unrecoverable failure; uniform fallback on soft failure.
+ * Returns NULL on any failure (caller treats it as METEOR_ERR_LLM).
  */
 LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
                                           const char* preamble,
@@ -136,9 +138,8 @@ LLMResponse* llm_client_get_phrase_dist(LLMClient*  client,
  * The caller feeds the returned text into llm_client_build_preamble() and
  * then the normal llm_client_get_phrase_dist() opening-step path (stage
  * 2) to actually embed bits while paraphrasing the answer.
- * Returns NULL only on OOM; HTTP/parse failures fall back internally to a
- * fixed deterministic string so encode/decode stay in lockstep. Caller
- * frees the returned string.
+ * Returns NULL on OOM and on any HTTP/parse failure (caller treats it as
+ * METEOR_ERR_LLM). Caller frees the returned string.
  */
 char* llm_client_get_digression_answer(LLMClient* client, const char* full_context,
                                        DigressionAxis axis, int variant);

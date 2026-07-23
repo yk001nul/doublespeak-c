@@ -144,7 +144,9 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
             if (is_opening && sentence_is_digression) {
                 digress_answer = llm_client_get_digression_answer(
                     ctx->llm, full_text, sentence_axis, sentence_variant);
-                if (!digress_answer) { *out_error = METEOR_ERR_OOM; break; }
+                /* NULL is now an LLM failure as well as OOM — the stage-1 call
+                   no longer substitutes a canned answer. */
+                if (!digress_answer) { *out_error = METEOR_ERR_LLM; break; }
                 digress_preamble = llm_client_build_preamble((int)ctx->style, digress_answer);
                 if (!digress_preamble) { free(digress_answer); *out_error = METEOR_ERR_OOM; break; }
             }
@@ -331,7 +333,13 @@ char* meteor_encode_impl(struct MeteorCtx* ctx,
     prng_wipe(&prng);
 
     if (!full_text) return NULL;
-    if (*out_error != METEOR_OK && *out_error != METEOR_ERR_LLM) {
+    /* Any error means no covertext. METEOR_ERR_LLM used to be excused here and
+       the partial text returned, but a truncated covertext handed back with an
+       error set is the same silent degradation the fallback tables caused: the
+       message is not fully encoded, so it cannot round-trip. (It also leaked —
+       the ctypes binding raises on the error code at meteor.py:285, before it
+       ever reaches meteor_free.) */
+    if (*out_error != METEOR_OK) {
         free(full_text);
         return NULL;
     }
