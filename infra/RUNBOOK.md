@@ -227,6 +227,17 @@ so it works with `cost_schedule_enabled=false` (the default). **The Cloud Run
 Saves ~100% of worker node cost while down — strictly better than Spot (§5) for
 an idle period, and with no pool recreation.
 
+**Confirm the target project first.** These commands carry no `--project`, so
+gcloud resolves it from `CLOUDSDK_CORE_PROJECT` or the active configuration —
+which in Cloud Shell is whatever project the session was opened against, not
+necessarily this one. A wrong project fails with `Not found: projects/<other>/
+zones/...` rather than doing damage, but check rather than assume:
+```bash
+gcloud config get-value project          # expect the deployment project
+gcloud config set project <project-id>   # if it is not
+```
+Or append `--project <project-id>` to every command below.
+
 **Down:**
 ```bash
 gcloud container clusters update doublespeak-workers --node-pool worker-pool \
