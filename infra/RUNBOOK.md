@@ -108,11 +108,43 @@ out instead of closing the door on everyone. Revocation takes up to
 `API_KEY_CACHE_TTL_S` (60s) to propagate, because each Cloud Run instance caches
 key records.
 
+Run from the **repo root** (the `meteor_stego.service.gcp` module path has to
+resolve), with `python3` — Cloud Shell is Linux, so the Windows `py -3` launcher
+these commands used to be written with does not exist there:
+
 ```bash
+cd ~/doublespeak-c
 export GCP_PROJECT=meteor-stego-1
-py -3 -m meteor_stego.service.gcp.manage_keys list
-py -3 -m meteor_stego.service.gcp.manage_keys disable <key-hash>
+python3 -m meteor_stego.service.gcp.manage_keys list
+python3 -m meteor_stego.service.gcp.manage_keys disable <key-hash>
 ```
+
+On a fresh Cloud Shell the Firestore client may be missing
+(`ModuleNotFoundError: google.cloud.firestore`):
+```bash
+python3 -m pip install --user -r meteor_stego/service/requirements-gcp.txt
+```
+
+Only the SHA-256 of each key is stored, so `list` shows hashes, not keys, and a
+raw key is unrecoverable once minted — `create` prints it exactly once. If a key
+is lost, mint a replacement and disable the old hash. To check whether a key you
+hold is the registered one, compare `printf '%s' '<key>' | sha256sum` against
+its hash — and send the **raw key** in requests, never the hash.
+
+**Calling the API while the front-end is IAM-private.** Cloud Run needs
+`Authorization: Bearer <Google identity token>` and forwards that header to the
+app, so pass the API key in `X-API-Key`, which the app reads first:
+
+```bash
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     -H "X-API-Key: dsk_live_..." \
+     -H "Content-Type: application/json" \
+     -X POST "$(terraform -chdir=infra/terraform output -raw frontend_url)/v1/encode" -d '{...}'
+```
+
+`Authorization: Bearer <api-key>` also works, but only in public mode where no
+identity token is competing for that header. In IAM-private mode it is the
+identity token that occupies it, so `X-API-Key` is the form to use.
 
 To find which key is responsible, the front-end logs `caller=<key-hash prefix>`
 on every accepted job:

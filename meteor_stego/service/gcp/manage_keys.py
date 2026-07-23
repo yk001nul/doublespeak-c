@@ -1,15 +1,21 @@
 """
 Operator CLI for API keys.
 
-    py -3 -m meteor_stego.service.gcp.manage_keys create --label alice --email a@b.c
-    py -3 -m meteor_stego.service.gcp.manage_keys list
-    py -3 -m meteor_stego.service.gcp.manage_keys disable <key-hash>
-    py -3 -m meteor_stego.service.gcp.manage_keys enable  <key-hash>
-    py -3 -m meteor_stego.service.gcp.manage_keys show    <key-hash>
+Run from the repo root, so the module path resolves. Use `python3` on Cloud
+Shell and any other Linux host; `py -3` is the Windows launcher and does not
+exist there.
+
+    python3 -m meteor_stego.service.gcp.manage_keys create --label alice --email a@b.c
+    python3 -m meteor_stego.service.gcp.manage_keys list
+    python3 -m meteor_stego.service.gcp.manage_keys disable <key-hash>
+    python3 -m meteor_stego.service.gcp.manage_keys enable  <key-hash>
+    python3 -m meteor_stego.service.gcp.manage_keys show    <key-hash>
 
 Needs `GCP_PROJECT` set and application-default credentials with Firestore
 access. `create` prints the key exactly once — only its SHA-256 is stored, so a
-lost key cannot be recovered and must be replaced.
+lost key cannot be recovered and must be replaced. `list` therefore shows key
+hashes, never keys; to check whether a key you hold is the registered one,
+compare `printf '%s' '<key>' | sha256sum` against its hash.
 
 This is the interim issuance path. Self-serve signup (Firebase Auth → mint a key
 per Google account) replaces it; the storage format is the same either way.

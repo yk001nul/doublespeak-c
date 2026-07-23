@@ -184,6 +184,40 @@ def test_x_api_key_header_accepted(frontend):
     assert r.status_code == 202
 
 
+def test_x_api_key_wins_over_iam_bearer_token(frontend):
+    """A Google identity token in Authorization must not shadow a valid API key.
+
+    While the service is IAM-private, Cloud Run demands
+    `Authorization: Bearer <identity token>` and forwards it to the container.
+    extract_key used to read Authorization first, so that token was hashed as
+    though it were the API key and every request 401'd with "invalid API key" —
+    with no way for the caller to avoid it, since dropping Authorization means
+    Cloud Run rejects the request before it reaches the app. Observed live on
+    meteor-stego-1 during post-deploy verification.
+    """
+    _, _, queue = frontend
+    bare = TestClient(frontend_app)
+    r = bare.post("/v1/encode", json=_encode_body(), headers={
+        # Shaped like a real Google ID token: three dot-separated JWT segments.
+        "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImFiYyJ9."
+                         "eyJhdWQiOiJodHRwczovL2V4YW1wbGUiLCJzdWIiOiIxIn0."
+                         "c2lnbmF0dXJl",
+        "X-API-Key": GOOD_KEY,
+    })
+    assert r.status_code == 202
+    assert len(queue.enqueued) == 1
+
+
+def test_bearer_api_key_still_accepted_without_x_api_key(frontend):
+    """The Bearer form stays valid — it is the ergonomic one in public mode,
+    where no identity token competes for the Authorization header."""
+    _, _, _ = frontend
+    bare = TestClient(frontend_app)
+    r = bare.post("/v1/encode", json=_encode_body(),
+                  headers={"Authorization": f"Bearer {GOOD_KEY}"})
+    assert r.status_code == 202
+
+
 def test_other_callers_job_is_404_not_403(frontend):
     client, store, _ = frontend
     job_id = client.post("/v1/encode", json=_encode_body()).json()["job_id"]
