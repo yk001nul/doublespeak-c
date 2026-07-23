@@ -352,12 +352,49 @@ static int curl_health(LLMClient* client)
  * SHARED: prompt building, JSON parsing, public API
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* New-word grammar: keys are plain lowercase syllables only (no EOW at word start). */
-static const char* NEW_WORD_GRAMMAR =
-    "root   ::= \"{\" ws pair (ws \",\" ws pair)* ws \"}\"\n"
-    "pair   ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
-    "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
-    "ws     ::= [ \\t\\n]*\n";
+/* NOTE ON ws — it is deliberately `" "?`, NOT `[ \t\n]*`, in every grammar here.
+ *
+ * An unbounded whitespace rule lets the model emit whitespace forever without
+ * ever reaching the token that would close the JSON. At temp=0.0 that is not a
+ * theoretical risk: greedy sampling picks the single most likely allowed token
+ * every time, so once "\n" wins once it wins again, and the response runs to
+ * n_predict as `{\n  "response":\n \n \n\n\n\n...` — unparseable, every time,
+ * for the same prompt. Observed on Phi-3.5-mini, where it fired on the FIRST
+ * call of every syllable-mode run, i.e. syllable mode never reached the model
+ * at all; the deleted FALLBACK_SYLLABLES table absorbed it silently and the
+ * round-trip still passed. See the "no local fallback distributions" note
+ * further down for why that was worse than failing.
+ *
+ * A bounded single space is enough for well-formed JSON and cannot loop. Do not
+ * relax this back to a `*` or `+` repetition. */
+
+/* NOTE ON PAIR COUNT — the repetition is bounded, `{0,N}`, never `*`.
+ *
+ * The candidate count used to live only in the prompt text, so nothing stopped
+ * the model from emitting pairs forever. It does: asked for 6 syllables it
+ * produced 14+, duplicating keys ("here" twice, "ance" twice) until n_predict
+ * cut the object off mid-pair, leaving unparseable JSON. Bounding the repetition
+ * to the requested count makes the closing "}" the only legal continuation once
+ * the budget is spent, so the object always closes.
+ *
+ * This is why the two syllable grammars are built per call instead of being
+ * static strings — the bound depends on client->max_candidates. */
+
+/* New-word grammar: keys are plain lowercase syllables only (no EOW at word start).
+   Caller frees. */
+static char* build_new_word_grammar(int n)
+{
+    if (n < 2) n = 2;
+    char* buf = (char*)malloc(256);
+    if (!buf) return NULL;
+    snprintf(buf, 256,
+        "root   ::= \"{\" ws pair (ws \",\" ws pair){0,%d} ws \"}\"\n"
+        "pair   ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
+        "number ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+        "ws     ::= \" \"?\n",
+        n - 1);
+    return buf;
+}
 
 /* Opening-step grammar: forces every opener to be "subject VERB ..." so a
  * fresh sentence is always a real clause, not a subject glued straight to a
@@ -487,17 +524,27 @@ static const char* OPENING_SUBJECT_GRAMMAR =
         "| \"update\" | \"communicate\" | \"undergo\" | \"commute\"\n"
     "word        ::= [a-z]+\n"
     "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
-    "ws          ::= [ \\t\\n]*\n";
+    "ws          ::= \" \"?\n";
 
 /* Continuation grammar: one-or-more syllable pairs, then the EOW pair "·" is
  * mandatory at the end.  This guarantees the model always emits an EOW
- * probability so words cannot grow without bound. */
-static const char* CONTINUATION_GRAMMAR =
-    "root     ::= \"{\" ws syl-pair (ws \",\" ws syl-pair)* ws \",\" ws eow-pair ws \"}\"\n"
-    "syl-pair ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
-    "eow-pair ::= \"\\\"\xc2\xb7\\\"\" ws \":\" ws number\n"
-    "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
-    "ws       ::= [ \\t\\n]*\n";
+ * probability so words cannot grow without bound.
+ * The syllable pairs are bounded to n-1 so that they plus the mandatory
+ * eow-pair total at most n — see the pair-count note above. Caller frees. */
+static char* build_continuation_grammar(int n)
+{
+    if (n < 2) n = 2;
+    char* buf = (char*)malloc(320);
+    if (!buf) return NULL;
+    snprintf(buf, 320,
+        "root     ::= \"{\" ws syl-pair (ws \",\" ws syl-pair){0,%d} ws \",\" ws eow-pair ws \"}\"\n"
+        "syl-pair ::= \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws number\n"
+        "eow-pair ::= \"\\\"\xc2\xb7\\\"\" ws \":\" ws number\n"
+        "number   ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
+        "ws       ::= \" \"?\n",
+        n - 2);
+    return buf;
+}
 
 static const char* style_to_str(int style)
 {
@@ -856,7 +903,7 @@ static char* build_phrase_grammar(StyleQuestion question)
         "connector   ::= %s\n"
         "word        ::= [a-z]+\n"
         "number      ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n"
-        "ws          ::= [ \\t\\n]*\n",
+        "ws          ::= \" \"?\n",
         connectors);
     return buf;
 }
@@ -1156,9 +1203,14 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
         : build_continuation_prompt(preamble, full_context, partial_word, client->max_candidates);
     if (!prompt) return NULL;
 
+    char* grammar = is_new_word
+        ? build_new_word_grammar(client->max_candidates)
+        : build_continuation_grammar(client->max_candidates);
+    if (!grammar) { free(prompt); return NULL; }
+
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     is_new_word ? NEW_WORD_GRAMMAR : CONTINUATION_GRAMMAR);
+    cJSON_AddStringToObject(req, "grammar",     grammar);
     cJSON_AddNumberToObject(req, "n_predict",   128);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
@@ -1167,6 +1219,7 @@ LLMResponse* llm_client_get_syllable_dist(LLMClient*  client,
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
+    free(grammar);
     if (!body) return NULL;
 
     char* raw = HTTP_POST(client, "/completion", body);
@@ -1193,9 +1246,12 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
                                      blacklist_word);
     if (!prompt) return NULL;
 
+    char* grammar = build_new_word_grammar(client->max_candidates);
+    if (!grammar) { free(prompt); return NULL; }
+
     cJSON* req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "prompt",      prompt);
-    cJSON_AddStringToObject(req, "grammar",     NEW_WORD_GRAMMAR);
+    cJSON_AddStringToObject(req, "grammar",     grammar);
     cJSON_AddNumberToObject(req, "n_predict",   96);
     cJSON_AddNumberToObject(req, "temperature", 0.0);
     cJSON_AddNumberToObject(req, "seed",        42);
@@ -1204,6 +1260,7 @@ LLMResponse* llm_client_get_word_dist(LLMClient*  client,
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
+    free(grammar);
     if (!body) return NULL;
 
     char* raw = HTTP_POST(client, "/completion", body);
