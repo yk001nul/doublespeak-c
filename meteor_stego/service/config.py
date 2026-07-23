@@ -53,7 +53,15 @@ SAMPLING = {
 # draw order, beta/candidate-count semantics, or the style/digression machinery.
 # Do NOT bump for changes that leave the distributions identical — timeouts, CPU
 # or node sizing, HTTP transport, error handling, logging.
-PROTOCOL_VERSION = 1
+#
+# History:
+#   1 — initial published contract.
+#   2 — every GBNF grammar's `ws` rule tightened from `[ \t\n]*` to `" "?`, and
+#       the stop=["\n"] sequence dropped from the digression stage-1 call. Both
+#       were bug fixes for calls that could never return usable output, so no
+#       covertext that decoded correctly is invalidated — but the wire text the
+#       model produces does change, so the contract must say so.
+PROTOCOL_VERSION = 2
 
 # ── Library defaults (match the CLI / test-suite defaults) ───────────────────
 
