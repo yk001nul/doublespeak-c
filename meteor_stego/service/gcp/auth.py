@@ -103,11 +103,28 @@ class FirestoreApiKeyStore:
 
 
 def extract_key(request: Request) -> str | None:
-    """Pull the key from either accepted header form."""
+    """Pull the key from either accepted header form.
+
+    X-API-Key is checked FIRST, and that order matters. While the service is
+    IAM-private, Cloud Run requires `Authorization: Bearer <Google identity
+    token>` and forwards that header to the container — so if Authorization won,
+    every request would authenticate the *identity token* as an API key, fail
+    the hash lookup, and 401 with "invalid API key" no matter how valid the real
+    key was. The caller has no way out of that: dropping Authorization to free
+    it up means Cloud Run rejects the request before it ever reaches us.
+
+    Checking X-API-Key first makes the two schemes compose: IAM owns
+    Authorization, the application owns X-API-Key, and a caller can send both.
+    Bearer is still accepted as a fallback, which is the ergonomic form once the
+    front-end is public and no identity token is in play.
+    """
+    key = request.headers.get("x-api-key")
+    if key:
+        return key
     header = request.headers.get("authorization") or ""
     if header.lower().startswith("bearer "):
         return header[7:].strip() or None
-    return request.headers.get("x-api-key") or None
+    return None
 
 
 def require_api_key(request: Request) -> Caller:
