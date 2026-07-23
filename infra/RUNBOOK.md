@@ -216,6 +216,59 @@ To remove entirely: `terraform apply ... -var cost_schedule_enabled=false` (tear
 
 **Caveats:** only worthwhile if the idle window is real — a job submitted during the window waits until scale-up (not ideal for global/bursty traffic). Confirm the actual usage pattern from the monitoring dashboard before committing to a window.
 
+### 4a. Ad-hoc scale-down / scale-up (no schedule, no Terraform)
+
+For a one-off idle stretch — a long local test run, a weekend, a pause between
+deploys. This is the same gcloud sequence the scaler job runs, executed by hand,
+so it works with `cost_schedule_enabled=false` (the default). **The Cloud Run
+`doublespeak-worker-scaler` job only exists when that var is true**, so
+`gcloud run jobs execute ...` above is not available unless you enabled §4.
+
+Saves ~100% of worker node cost while down — strictly better than Spot (§5) for
+an idle period, and with no pool recreation.
+
+**Down:**
+```bash
+gcloud container clusters update doublespeak-workers --node-pool worker-pool \
+  --no-enable-autoscaling --zone us-central1-a --quiet
+gcloud container clusters resize doublespeak-workers --node-pool worker-pool \
+  --num-nodes 0 --zone us-central1-a --quiet
+gcloud tasks queues pause meteor-jobs --location us-central1 --quiet
+```
+
+**Up:**
+```bash
+gcloud container clusters resize doublespeak-workers --node-pool worker-pool \
+  --num-nodes 1 --zone us-central1-a --quiet
+gcloud container clusters update doublespeak-workers --node-pool worker-pool \
+  --enable-autoscaling --min-nodes 1 --max-nodes 4 --zone us-central1-a --quiet
+gcloud tasks queues resume meteor-jobs --location us-central1 --quiet
+```
+
+**Verify:**
+```bash
+kubectl -n doublespeak get nodes    # 0 when down; one C2 node when up
+gcloud tasks queues describe meteor-jobs --location us-central1 --format='value(state)'
+```
+
+**Why autoscaling must be disabled first.** The worker Deployment is
+`replicas: 1` (`k8s/worker-deployment.yaml`), so a pod is always pending and the
+cluster autoscaler will immediately re-provision a node to satisfy it. Resizing
+to 0 with autoscaling still enabled just bounces straight back. This is also why
+setting `var.worker_min_replicas=0` on its own does **not** reduce idle cost — it
+lowers the floor but does not stop the autoscaler from meeting pending demand.
+
+**⚠️ This creates Terraform drift.** The `autoscaling` block is managed in
+`main.tf`, so the next `terraform apply` re-enables autoscaling and scales the
+pool back to `worker_min_replicas`. That is recoverable, not destructive, but do
+not scale down by hand and then apply unrelated Terraform expecting the pool to
+stay at 0. (§4's scheduled job creates the same drift by design.)
+
+Match `--min-nodes`/`--max-nodes` on the way up to your current
+`worker_min_replicas`/`worker_max_replicas` (defaults 1 and 4) or the next
+`terraform plan` shows a spurious diff. Coming back up pays a cold start: node
+provision plus a multi-GB GGUF reload (`--no-mmap`), a few minutes.
+
 ## 5. Spot worker nodes (opt-in)
 
 Moves the C2 worker pool onto Spot VMs (~60–70% off). Opt-in via Terraform `var.worker_use_spot=true`. Determinism-safe (same `machine_type` + `node_min_cpu_platform` as on-demand → byte-identical float math). A preemption mid-run is recovered by the worker's **SIGTERM re-enqueue** (`worker_app.recover_inflight` resets the in-flight job to `queued` and re-pushes it), **not** by an automatic Cloud Tasks retry — the ack-fast worker already returned 200, so the task is gone from the queue. The re-run is deterministic (identical output). This needs the worker's Cloud Tasks enqueuer + act-as-invoker IAM and `TASKS_QUEUE`/`WORKER_URL` config, all added with the `worker_use_spot` var.

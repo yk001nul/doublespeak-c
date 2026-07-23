@@ -146,5 +146,22 @@ char* llm_client_get_digression_answer(LLMClient* client, const char* full_conte
 
 void llm_response_free(LLMResponse* resp);
 
+/*
+ * Parses a /completion response body into a candidate distribution. Exposed
+ * (rather than static) so tests/test_prefix_free.c can drive it with crafted
+ * JSON and assert the prefix-free invariant with no server and no model.
+ *
+ * The returned candidate set is guaranteed PREFIX-FREE: no candidate is a
+ * prefix of any other, equality included. Both decode paths recover the
+ * encoder's choice by taking the longest candidate that prefixes the remaining
+ * covertext, which is only unambiguous if the set is a uniquely decodable code.
+ * Keys that would violate this are dropped, keeping the earliest in the model's
+ * JSON key order.
+ *
+ * Returns NULL if the body or its "content" is unparseable, or yields no
+ * candidates. Caller frees with llm_response_free().
+ */
+LLMResponse* parse_llm_response(const char* raw_json, int max_candidates);
+
 /* Returns 1 if the server at base_url/health responds OK, 0 otherwise. */
 int llm_client_health(LLMClient* client);

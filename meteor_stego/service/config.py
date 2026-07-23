@@ -61,7 +61,10 @@ SAMPLING = {
 #       were bug fixes for calls that could never return usable output, so no
 #       covertext that decoded correctly is invalidated — but the wire text the
 #       model produces does change, so the contract must say so.
-PROTOCOL_VERSION = 2
+#   3 — the candidate set is filtered to be prefix-free in parse_llm_response.
+#       This changes which candidates occupy slots, so v2 and v3 builds cannot
+#       decode each other's covertext even though the prompts are identical.
+PROTOCOL_VERSION = 3
 
 # ── Library defaults (match the CLI / test-suite defaults) ───────────────────
 
