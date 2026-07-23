@@ -986,7 +986,8 @@ static char* build_digression_question_prompt(const char* ctx, DigressionAxis ax
    collapses newlines to spaces, drops stray quote characters (so it nests
    cleanly inside llm_client_build_preamble()'s Original: "..." wrapper),
    and truncates at the first sentence-ending punctuation. Returns NULL on
-   unparseable/empty input — caller falls back to a fixed answer. */
+   unparseable/empty input, which the caller now surfaces as METEOR_ERR_LLM
+   (it used to substitute a fixed answer). */
 static char* parse_llm_plain_answer(const char* raw_json)
 {
     cJSON* env = cJSON_Parse(raw_json);
@@ -1044,9 +1045,14 @@ char* llm_client_get_digression_answer(LLMClient* client, const char* full_conte
     cJSON_AddNumberToObject(req, "seed",        42);
     cJSON_AddBoolToObject  (req, "stream",      0);
     cJSON_AddBoolToObject  (req, "cache_prompt", 0);
-    cJSON* stop = cJSON_CreateArray();
-    cJSON_AddItemToArray(stop, cJSON_CreateString("\n"));
-    cJSON_AddItemToObject(req, "stop", stop);
+    /* NO "stop" sequence. This used to send stop=["\n"] to keep the answer to a
+       single line, but the model opens its reply with a newline, so generation
+       halted on token 1 and the response came back with content="" every time
+       (stop_type=word, tokens_predicted=1). parse_llm_plain_answer then returned
+       NULL, which the deleted DIGRESSION_FALLBACK_ANSWER silently absorbed — so
+       every digression in every covertext was the same canned sentence. The stop
+       sequence was redundant anyway: parse_llm_plain_answer already folds newlines
+       to spaces and truncates at the first sentence-ending punctuation. */
     char* body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(prompt);
