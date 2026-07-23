@@ -250,7 +250,7 @@ target_link_libraries(doublespeak PRIVATE meteor)
 
 enable_testing()
 
-set(ALL_TESTS prng bits meteor_core syllabifier roundtrip determinism styled_encode capacity llm_failure)
+set(ALL_TESTS prng bits meteor_core syllabifier prefix_free roundtrip determinism styled_encode capacity llm_failure)
 
 # Internal source files needed by tests
 set(INTERNAL_SOURCES

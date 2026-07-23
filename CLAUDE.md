@@ -146,7 +146,7 @@ The library is structured around 7 components (see `ARCHITECTURE.md §4` for ful
 | Bit Packing | `src/bits.c/.h` | Message ↔ bit array, MSB-first, null-terminated |
 | Meteor Core | `src/meteor_core.c/.h` | One encode/decode step: slot table + common-prefix recovery |
 | Syllabifier | `src/syllabifier.c/.h` | libhyphen wrapper + heuristic fallback (not used in decode — see below) |
-| LLM Client | `src/llm_client.c/.h` | WinHTTP (Windows) / libcurl (Linux/macOS) + cJSON; two-grammar GBNF: `NEW_WORD_GRAMMAR` (syllables only) for word starts, `CONTINUATION_GRAMMAR` (syllables + mandatory `·` EOW at end) for continuations |
+| LLM Client | `src/llm_client.c/.h` | WinHTTP (Windows) / libcurl (Linux/macOS) + cJSON; two-grammar GBNF built per call: `build_new_word_grammar()` (syllables only) for word starts, `build_continuation_grammar()` (syllables + mandatory `·` EOW at end) for continuations — built rather than static because the pair-count bound depends on `max_candidates`. Returns a prefix-free candidate set |
 | Encode | `src/encode.c/.h` | Full encode pipeline; loop runs until all message bits are encoded **and** the current word ends with EOW (not just until bits are exhausted) |
 | Decode | `src/decode.c/.h` | Full decode pipeline; uses **LLM prefix-matching** to recover the encoder's syllable sequence from each covertext word — the syllabifier is not used |
 
@@ -156,11 +156,19 @@ Public API is in `include/meteor.h`. FFI bindings (Python ctypes, C# P/Invoke) l
 
 ### Encode/decode algorithm notes
 
-**Two-grammar system:** With `--temp 0.0` the model is greedy and assigns near-zero probability to the EOW token `·` when it is merely *allowed* by the grammar. `CONTINUATION_GRAMMAR` makes `·` *mandatory* as the final key in every continuation response, guaranteeing it always appears in the slot table.
+**Two-grammar system:** With `--temp 0.0` the model is greedy and assigns near-zero probability to the EOW token `·` when it is merely *allowed* by the grammar. The continuation grammar makes `·` *mandatory* as the final key in every continuation response, guaranteeing it always appears in the slot table.
+
+**Every GBNF repetition must be bounded — `*` and `+` are termination bugs at `temp=0.0`.** Greedy sampling picks the single most likely *allowed* token every time, so if a rule lets the model repeat something, it will repeat it until `n_predict` truncates the response mid-JSON, and the parse fails. Two instances of this shipped for months, both invisible because the deleted fallback tables absorbed the parse failure:
+- `ws ::= [ \t\n]*` — the model emitted `{\n  "response":\n \n \n\n\n\n…` to the 128-token cap, on the *first* call of every syllable-mode run. Now `ws ::= " "?`.
+- `pair (ws "," ws pair)*` — the candidate count lived only in the prompt text, so asked for 6 syllables the model produced 14+ with duplicate keys and never closed the object. Now bounded to the requested count with `{0,N}` (supported by the pinned llama.cpp), which makes `}` the only legal continuation once the budget is spent.
+
+Relatedly, **do not add a `stop` sequence to a `/completion` call without checking what the model emits first.** The digression stage-1 call sent `stop: ["\n"]`; the model opens its reply with a newline, so it matched on token 1 and returned `content=""` every time (`stop_type=word`, `tokens_predicted=1`), making every digression in every covertext the same canned fallback string.
 
 **Encoder loop termination:** The encode loop condition is `(bit_offset < total_bits || partial_word[0] != '\0')`. The encoder must always finish the current word with an EOW step before stopping, because the decoder synthesises an EOW step at every word boundary. Stopping mid-word (old behaviour) caused a one-step PRNG divergence per word.
 
 **Decoder prefix-matching:** The syllabifier cannot reconstruct the encoder's syllable sequence for artificially concatenated words (e.g. `"resreinin..."` — heuristic VC|CV splits differ from the encoder's actual LLM choices). Instead, the decoder iterates each covertext word character by character, querying the LLM with the same context/partial as the encoder, and picks the longest candidate that is a prefix of the remaining text. After all syllables of a word are consumed, one EOW synthesis step is run to keep the PRNG in sync — unless the null terminator was already found mid-word (in which case EOW synthesis is skipped, matching the encoder which also had no EOW for the last partial word).
+
+**Candidate sets are prefix-free — this is what makes longest-match correct.** Taking the longest candidate that prefixes the remaining text (`decode.c:377-387` syllable, `:254-262` style) only recovers the encoder's choice if no candidate is a prefix of another. Otherwise the encoder can pick `re` while `rere` is also in the slot table, and the decoder takes `rere` — every subsequent bit is garbage, with no error signal. `parse_llm_response` (`llm_client.c`) therefore drops any key that is a prefix of an already-kept candidate, or vice versa, keeping the earliest in the model's JSON key order; exact duplicates are the equal-length case of the same rule. Both sides filter identically from the same JSON before `meteor_build_dist`, so lockstep holds. **Do not weaken this back to an equality-only duplicate check.** Real greedy `temp=0.0` output is highly repetitive (`rerererere`, `propropro`), so overlapping candidates are common in syllable mode; the filter is a no-op for style mode, where phrases rarely prefix each other (verified: `styled_encode` covertext is byte-identical before and after). `tests/test_prefix_free.c` (ctest `prefix_free`) asserts the invariant directly against crafted JSON with no server or model, and fails 9/29 if the filter is reverted.
 
 ### Style mode (phrase-level paraphrase encoding, `imp/topic-gen` branch)
 

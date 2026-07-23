@@ -710,7 +710,9 @@ static void map_eow(char* text)
         strcpy(text, "\x01");
 }
 
-static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
+/* Not static: tests/test_prefix_free.c drives it directly with crafted JSON to
+   assert the prefix-free invariant without needing a live server. */
+LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
 {
     cJSON* env = cJSON_Parse(raw_json);
     if (!env) return NULL;
@@ -745,12 +747,37 @@ static LLMResponse* parse_llm_response(const char* raw_json, int max_candidates)
         text[63] = '\0';
         map_eow(text);
 
-        /* skip duplicate keys — JSON with repeated keys causes encode/decode divergence */
-        int dup = 0;
+        /* Keep the candidate set PREFIX-FREE: drop this key if it is a prefix of
+           an already-kept candidate, or one of them is a prefix of it. Exact
+           duplicates (which JSON can legally repeat) are the |a| == |b| case and
+           were the only case handled before.
+
+           This is what makes the set a uniquely decodable code. Both decoders
+           recover the encoder's choice by taking the LONGEST candidate that is a
+           prefix of the remaining covertext (decode.c:377-387 syllable,
+           :254-262 style). If the encoder picked a candidate that is a proper
+           prefix of another candidate in the same slot table, the decoder takes
+           the longer one instead and every subsequent bit is garbage, with no
+           error signal. Filtering here rules that out: if no candidate is a
+           prefix of another, at most one can be a prefix of the remaining text
+           (if A and B both prefix S then the shorter prefixes the longer), so
+           the longest match is the only match and is necessarily the encoder's.
+
+           Order is the model's JSON key order, identical on both sides, and this
+           runs before meteor_build_dist, so encoder and decoder build slot tables
+           from the same filtered list — the lockstep invariant holds.
+
+           Previously unreachable: the deleted fallback tables happened to be
+           prefix-free, so only real model output exposed it. */
+        int conflict = 0;
         for (int j = 0; j < i; j++) {
-            if (strcmp(resp->candidates[j].text, text) == 0) { dup = 1; break; }
+            const char* prev = resp->candidates[j].text;
+            size_t      lp   = strlen(prev);
+            size_t      lt   = strlen(text);
+            size_t      m    = lp < lt ? lp : lt;
+            if (memcmp(prev, text, m) == 0) { conflict = 1; break; }
         }
-        if (dup) continue;
+        if (conflict) continue;
 
         strncpy(resp->candidates[i].text, text, 63);
         resp->candidates[i].text[63] = '\0';
