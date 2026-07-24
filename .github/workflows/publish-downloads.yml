@@ -1,0 +1,106 @@
+name: Publish download page
+
+# Mirrors the binary assets of a published release into the PUBLIC downloads
+# repo and regenerates its GitHub Pages index. Source is never copied — only
+# uploaded release assets (GitHub's auto "Source code" archives are a separate
+# API field that `gh release download` does not touch).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (blank = current latest, non-prerelease)"
+        required: false
+        default: ""
+
+# Only read access to THIS repo's releases is needed; pushing to the public
+# repo uses the PAGES_DEPLOY_TOKEN secret, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-downloads
+  cancel-in-progress: false
+
+env:
+  # The public repo that hosts the page + mirrored binaries.
+  PUBLIC_REPO: yk001nul/doublespeak-downloads
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # On the release trigger, skip drafts/prereleases; always run on manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.release.prerelease == false
+    steps:
+      - name: Checkout source repo (for the generator script)
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag + metadata
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          fi
+          echo "Resolved tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json name,tagName,publishedAt,body > release.json
+
+      - name: Download release binaries (uploaded assets only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          gh release download "${{ steps.rel.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir staging
+          echo "Downloaded:"
+          ls -la staging
+
+      - name: Checkout public downloads repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PUBLIC_REPO }}
+          token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+          path: public
+
+      - name: Assemble page + binaries
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.rel.outputs.tag }}"
+          # Stable "latest" pointer (overwritten each release) + versioned archive.
+          rm -rf public/downloads/latest
+          mkdir -p public/downloads/latest "public/downloads/$TAG"
+          cp staging/* public/downloads/latest/
+          cp staging/* "public/downloads/$TAG/"
+          touch public/.nojekyll
+          bash .github/scripts/gen_downloads_index.sh \
+            "$TAG" release.json public/downloads/latest > public/index.html
+          echo "Generated index.html:"
+          ls -la public public/downloads
+
+      - name: Commit & push to public repo
+        run: |
+          set -euo pipefail
+          cd public
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+            exit 0
+          fi
+          git commit -m "Publish downloads for ${{ steps.rel.outputs.tag }}"
+          git push
