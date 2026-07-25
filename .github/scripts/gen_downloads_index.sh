@@ -63,6 +63,86 @@ CARD
   cards+=$'\n'
 done < <(find "$LATEST_DIR" -maxdepth 1 -type f | sort)
 
+# Condensed usage guide (summarised from README.md) — collapsed <details> blocks
+# so the page still fits a single screen. Quoted heredoc: the $ and backticks in
+# the code samples are literal and must NOT be expanded by the shell.
+USAGE_HTML="$(cat <<'USAGE'
+  <section class="usage">
+    <h2>How to use</h2>
+    <p class="usage-intro">
+      Each archive contains the compiled library (<code>meteor.dll</code> /
+      <code>libmeteor.so</code>, plus <code>meteor.lib</code> on Windows) and the
+      <code>doublespeak</code> command-line tool. Every encode/decode call needs a
+      running <code>llama-server</code> (llama.cpp) reachable over HTTP — and both
+      sides must share the <strong>same model file, thread count, passphrase and
+      starting context</strong>, or the message can't be recovered. Pick your
+      interface below.
+    </p>
+
+    <details class="use">
+      <summary>Command line — <code>doublespeak</code></summary>
+      <pre>doublespeak message [-f] [-d] context passphrase [style] [outputpath] [URL]
+
+# encode "hi" into covertext, style 1 (informal chat), write to a file
+doublespeak "hi" "The team meets on Friday." "secret-passphrase" 1 covertext.txt
+
+# decode it back (-d), reading the covertext from a file (-f)
+doublespeak covertext.txt -f -d "The team meets on Friday." "secret-passphrase"</pre>
+      <p>
+        <code>-f</code> treats <code>message</code> as a filepath; <code>-d</code>
+        decodes instead of encodes. <code>context</code> and <code>passphrase</code>
+        are mandatory and shared by both sides. <code>style</code> (1–4: informal
+        chat, formal email, casual blog, news article), <code>outputpath</code> and
+        the <code>llama-server</code> <code>URL</code> (default
+        <code>http://127.0.0.1:8080</code>) are optional and strictly positional.
+        Encode prints a live progress line to stderr; the result goes to stdout /
+        <code>outputpath</code>.
+      </p>
+    </details>
+
+    <details class="use">
+      <summary>Python — <code>ctypes</code></summary>
+      <pre>import sys; sys.path.insert(0, "bindings/python")
+from meteor import Meteor   # auto-loads meteor.dll (Windows) or libmeteor.so (Linux)
+
+m  = Meteor(key_input=b"secret-passphrase", salt=None)
+ct = m.encode(b"hi", starting_context="The team meets on Friday.")
+m.decode(ct, starting_context="The team meets on Friday.")   # -> b"hi"</pre>
+    </details>
+
+    <details class="use">
+      <summary>C# — P/Invoke (Godot 4 / .NET)</summary>
+      <pre>using MeteorStego;   // bindings/csharp/Meteor.cs; resolves meteor.dll / libmeteor.so
+using System.Text;
+
+using var m   = new Meteor(Encoding.UTF8.GetBytes("secret-passphrase"));
+string ct     = m.Encode(Encoding.UTF8.GetBytes("hi"), "The team meets on Friday.");
+byte[] msg    = m.Decode(ct, "The team meets on Friday.");   // Encoding.UTF8 -> "hi"</pre>
+    </details>
+
+    <details class="use">
+      <summary>C / C++ — link the library directly</summary>
+      <pre>#include "meteor.h"   // plain C header, guarded with extern "C" — usable from C++
+
+MeteorConfig cfg = {0};
+cfg.key_input = (const uint8_t*)"secret-passphrase";
+cfg.key_input_len = 17;
+cfg.beta = 3; cfg.num_candidates = 8; cfg.max_steps = 256;
+cfg.llm_url = "http://127.0.0.1:8080"; cfg.llm_timeout_ms = 30000;
+
+MeteorCtx* ctx = meteor_create(&cfg);
+int err = 0;
+char* ct = meteor_encode(ctx, (const uint8_t*)"hi", 2, "The team meets on Friday.", &err);</pre>
+      <p>
+        Windows: link <code>meteor.lib</code> and keep <code>meteor.dll</code> beside
+        your binary (or on <code>PATH</code>). Linux: link <code>-lmeteor</code> and
+        put <code>libmeteor.so</code> on <code>LD_LIBRARY_PATH</code>.
+      </p>
+    </details>
+  </section>
+USAGE
+)"
+
 NOTES_HTML=""
 if [ -n "$BODY" ]; then
   NOTES_HTML="$(cat <<NOTES
@@ -118,6 +198,15 @@ cat <<HTML
   .file { color: var(--muted); font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .note { color: var(--muted); font-size: 13px; }
   .dl { margin-top: 8px; color: var(--accent); font-weight: 600; font-size: 14px; }
+  .usage { margin-bottom: 36px; }
+  .usage h2 { font-size: 20px; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .usage-intro { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+  .use { border: 1px solid var(--border); border-radius: 10px; background: var(--card); margin-bottom: 8px; }
+  .use summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 14px; }
+  .use pre { margin: 0; padding: 4px 16px 16px; overflow-x: auto; white-space: pre; color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.55; }
+  .use p { margin: 0 16px 14px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+  .use code, .usage code { background: transparent; border: 0; padding: 0; }
+  .dl-heading { font-size: 20px; margin: 0 0 16px; letter-spacing: -0.01em; }
   .notes { margin-top: 40px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
   .notes summary { cursor: pointer; padding: 14px 18px; font-weight: 600; }
   .notes pre { margin: 0; padding: 0 18px 18px; white-space: pre-wrap; word-wrap: break-word; color: var(--muted); font-size: 14px; }
@@ -132,6 +221,9 @@ cat <<HTML
     <p class="sub">Prebuilt binaries of the Meteor steganographic C library &middot; released ${PUBLISHED}</p>
   </header>
 
+${USAGE_HTML}
+
+  <h2 class="dl-heading">Downloads</h2>
   <div class="grid">
 ${cards}  </div>
 
